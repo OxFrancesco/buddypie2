@@ -63,6 +63,15 @@
   }
 }
 
+/* Logo yellow fill animation on hover */
+.logo-yellow {
+  fill-opacity: 0;
+  transition: fill-opacity 0.5s ease-out;
+}
+.group:hover .logo-yellow {
+  fill-opacity: 1;
+}
+
 /* Hide Clerk footer (Secured by Clerk, Development mode) in UserButton popover */
 @layer clerk {
   .cl-userButtonPopoverFooter,

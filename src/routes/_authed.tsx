@@ -46,9 +46,14 @@ function AuthedLayout() {
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
           <Link
             to="/dashboard"
-            className="text-lg font-black uppercase tracking-wider"
+            className="flex items-center gap-2 text-lg font-black uppercase tracking-wider"
           >
-            BuddyPie
+            <img
+              src="/logo.svg"
+              alt="BuddyPie"
+              className="h-8 w-auto"
+            />
+            <span>BuddyPie</span>
           </Link>
           <div className="flex shrink-0 items-center">
             <UserButton
