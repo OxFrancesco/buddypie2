@@ -1,14 +1,17 @@
-import type { FormEvent } from 'react'
 import { useState } from 'react'
 import { convexQuery } from '@convex-dev/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
+import type { ChangeEvent, FormEvent } from 'react'
+import type { GithubRepoOption } from '~/features/sandboxes/server'
 import { SandboxCard } from '~/components/sandbox-card'
 import {
   checkGithubConnection,
   createSandbox,
   deleteSandbox,
+  listGithubBranches,
+  listGithubRepos,
   restartSandbox,
 } from '~/features/sandboxes/server'
 
@@ -40,6 +43,15 @@ function DashboardRoute() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
   const [busySandboxId, setBusySandboxId] = useState<string | null>(null)
+  const [githubRepos, setGithubRepos] = useState<Array<GithubRepoOption>>([])
+  const [githubBranches, setGithubBranches] = useState<Array<string>>([])
+  const [githubPickerError, setGithubPickerError] = useState<string | null>(null)
+  const [hasLoadedGithubRepos, setHasLoadedGithubRepos] = useState(false)
+  const [isLoadingGithubRepos, setIsLoadingGithubRepos] = useState(false)
+  const [isLoadingGithubBranches, setIsLoadingGithubBranches] = useState(false)
+  const [selectedGithubRepoFullName, setSelectedGithubRepoFullName] = useState<
+    string | null
+  >(null)
 
   async function refreshDashboard() {
     await Promise.all([
@@ -50,6 +62,76 @@ function DashboardRoute() {
         queryKey: convexQuery(api.sandboxes.list, {}).queryKey,
       }),
     ])
+  }
+
+  async function loadGithubBranchesForRepo(repo: GithubRepoOption) {
+    setSelectedGithubRepoFullName(repo.fullName)
+    setIsLoadingGithubBranches(true)
+    setGithubPickerError(null)
+
+    try {
+      const branches = await listGithubBranches({
+        data: {
+          repoFullName: repo.fullName,
+        },
+      })
+
+      setGithubBranches(branches)
+    } catch (error) {
+      setGithubBranches([])
+      setGithubPickerError(
+        error instanceof Error ? error.message : 'Could not load GitHub branches.',
+      )
+    } finally {
+      setIsLoadingGithubBranches(false)
+    }
+  }
+
+  function applyGithubRepo(repo: GithubRepoOption) {
+    setRepoUrl(repo.cloneUrl)
+    setBranch(repo.defaultBranch)
+    void loadGithubBranchesForRepo(repo)
+  }
+
+  async function handleLoadGithubRepos() {
+    setGithubPickerError(null)
+    setIsLoadingGithubRepos(true)
+
+    try {
+      const repos = await listGithubRepos()
+      setGithubRepos(repos)
+      setHasLoadedGithubRepos(true)
+
+      const matchedRepo = repos.find((repo) => repo.cloneUrl === repoUrl)
+
+      if (matchedRepo) {
+        setBranch((currentBranch) => currentBranch || matchedRepo.defaultBranch)
+        void loadGithubBranchesForRepo(matchedRepo)
+      }
+    } catch (error) {
+      setGithubPickerError(
+        error instanceof Error ? error.message : 'Could not load GitHub repositories.',
+      )
+    } finally {
+      setIsLoadingGithubRepos(false)
+    }
+  }
+
+  function handleRepoUrlChange(event: ChangeEvent<HTMLInputElement>) {
+    const nextRepoUrl = event.target.value
+    const matchedRepo = githubRepos.find((repo) => repo.cloneUrl === nextRepoUrl)
+
+    setFormError(null)
+    setGithubPickerError(null)
+    setRepoUrl(nextRepoUrl)
+
+    if (!matchedRepo) {
+      setSelectedGithubRepoFullName(null)
+      setGithubBranches([])
+      return
+    }
+
+    applyGithubRepo(matchedRepo)
   }
 
   async function handleCreateSandbox(event: FormEvent<HTMLFormElement>) {
@@ -68,6 +150,8 @@ function DashboardRoute() {
 
       setRepoUrl('')
       setBranch('')
+      setSelectedGithubRepoFullName(null)
+      setGithubBranches([])
       await refreshDashboard()
       await navigate({
         to: '/sandboxes/$sandboxId',
@@ -129,9 +213,9 @@ function DashboardRoute() {
             Welcome back, {userLabel}.
           </h2>
           <p className="mt-4 max-w-2xl text-base leading-7 text-white/65">
-            Paste an HTTPS repository URL, choose an optional branch, and
-            BuddyPie will spin up a Daytona sandbox with the stock OpenCode web
-            interface pointed at that repo.
+            Paste an HTTPS repository URL or fetch one from GitHub, choose an
+            optional branch, and BuddyPie will spin up a Daytona sandbox with
+            the stock OpenCode web interface pointed at that repo.
           </p>
 
           <form className="mt-8 space-y-4" onSubmit={handleCreateSandbox}>
@@ -146,11 +230,42 @@ function DashboardRoute() {
                 id="repo-url"
                 type="url"
                 required
+                list={githubRepos.length > 0 ? 'github-repo-options' : undefined}
                 value={repoUrl}
-                onChange={(event) => setRepoUrl(event.target.value)}
+                onChange={handleRepoUrlChange}
                 placeholder="https://github.com/owner/repo.git"
                 className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-emerald-300/45 focus:bg-black/30"
               />
+
+              {github.connected ? (
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleLoadGithubRepos()
+                    }}
+                    disabled={isLoadingGithubRepos}
+                    className="rounded-full border border-white/12 px-4 py-2 text-xs font-medium text-white/85 transition hover:border-white/30 hover:bg-white/6 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isLoadingGithubRepos
+                      ? 'Fetching GitHub repos...'
+                      : hasLoadedGithubRepos
+                        ? 'Refresh GitHub repos'
+                        : 'Fetch GitHub repos'}
+                  </button>
+                  <p className="text-xs text-white/45">
+                    {hasLoadedGithubRepos
+                      ? githubRepos.length > 0
+                        ? `${githubRepos.length} repo${githubRepos.length === 1 ? '' : 's'} available as suggestions.`
+                        : 'No repositories were found on this GitHub connection.'
+                      : 'Load your connected GitHub repositories to autocomplete this field.'}
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-3 text-xs text-white/45">
+                  Connect GitHub in Clerk to browse your repositories here.
+                </p>
+              )}
             </div>
 
             <div>
@@ -163,12 +278,51 @@ function DashboardRoute() {
               <input
                 id="branch"
                 type="text"
+                list={githubBranches.length > 0 ? 'github-branch-options' : undefined}
                 value={branch}
-                onChange={(event) => setBranch(event.target.value)}
+                onChange={(event) => {
+                  setFormError(null)
+                  setBranch(event.target.value)
+                }}
                 placeholder="main"
                 className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-emerald-300/45 focus:bg-black/30"
               />
+              <p className="mt-3 text-xs text-white/45">
+                {isLoadingGithubBranches
+                  ? 'Fetching branches from GitHub...'
+                  : selectedGithubRepoFullName && githubBranches.length > 0
+                    ? `${githubBranches.length} branch suggestion${githubBranches.length === 1 ? '' : 's'} loaded from ${selectedGithubRepoFullName}.`
+                    : selectedGithubRepoFullName
+                      ? `No branch suggestions were found for ${selectedGithubRepoFullName}.`
+                      : 'Leave blank to use the repository default branch.'}
+              </p>
             </div>
+
+            {githubRepos.length > 0 ? (
+              <datalist id="github-repo-options">
+                {githubRepos.map((repo) => (
+                  <option
+                    key={repo.id}
+                    value={repo.cloneUrl}
+                    label={`${repo.fullName} (${repo.private ? 'private' : 'public'})`}
+                  />
+                ))}
+              </datalist>
+            ) : null}
+
+            {githubBranches.length > 0 ? (
+              <datalist id="github-branch-options">
+                {githubBranches.map((branchName) => (
+                  <option key={branchName} value={branchName} />
+                ))}
+              </datalist>
+            ) : null}
+
+            {githubPickerError ? (
+              <div className="rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                {githubPickerError}
+              </div>
+            ) : null}
 
             {formError ? (
               <div className="rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
@@ -185,8 +339,8 @@ function DashboardRoute() {
                 {isCreating ? 'Launching sandbox...' : 'Create sandbox'}
               </button>
               <p className="text-sm text-white/45">
-                Public Git URLs work immediately. Private GitHub repos require a
-                connected GitHub account in Clerk.
+                Public Git URLs work immediately. Connected GitHub accounts can
+                browse private repositories and prefill the branch field.
               </p>
             </div>
           </form>

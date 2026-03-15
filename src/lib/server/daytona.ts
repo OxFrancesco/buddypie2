@@ -5,6 +5,7 @@ import { getWorkspacePath, normalizeSandboxInput } from '~/lib/sandboxes'
 const OPENCODE_PORT = 3000
 const OPENCODE_VERSION = '1.1.1'
 const READY_TIMEOUT_MS = 15000
+const DEFAULT_DAYTONA_API_URL = 'https://app.daytona.io/api'
 
 function injectEnvVar(name: string, content: string) {
   const base64 = Buffer.from(content).toString('base64')
@@ -23,6 +24,30 @@ function getRequiredDaytonaApiKey() {
   }
 
   return apiKey
+}
+
+function getDaytonaApiUrl() {
+  const configuredApiUrl = process.env.DAYTONA_API_URL?.trim()
+
+  if (!configuredApiUrl) {
+    return DEFAULT_DAYTONA_API_URL
+  }
+
+  let parsedUrl: URL
+
+  try {
+    parsedUrl = new URL(configuredApiUrl)
+  } catch {
+    throw new Error(
+      `DAYTONA_API_URL is invalid. Expected a full URL like ${DEFAULT_DAYTONA_API_URL}.`,
+    )
+  }
+
+  if (parsedUrl.hostname === 'api.daytona.ai') {
+    return DEFAULT_DAYTONA_API_URL
+  }
+
+  return configuredApiUrl
 }
 
 async function cloneRepository(args: {
@@ -143,7 +168,10 @@ export async function createOpenCodeSandbox(args: {
   branch?: string
   githubToken?: string | null
 }) {
-  const daytona = new Daytona({ apiKey: getRequiredDaytonaApiKey() })
+  const daytona = new Daytona({
+    apiKey: getRequiredDaytonaApiKey(),
+    apiUrl: getDaytonaApiUrl(),
+  })
   let sandbox: Sandbox | undefined
 
   try {
@@ -190,7 +218,10 @@ export async function createOpenCodeSandbox(args: {
 }
 
 export async function deleteOpenCodeSandbox(daytonaSandboxId: string) {
-  const daytona = new Daytona({ apiKey: getRequiredDaytonaApiKey() })
+  const daytona = new Daytona({
+    apiKey: getRequiredDaytonaApiKey(),
+    apiUrl: getDaytonaApiUrl(),
+  })
   const sandbox = await daytona.get(daytonaSandboxId)
   await sandbox.delete()
 }

@@ -1,13 +1,35 @@
 import { createServerFn } from '@tanstack/react-start'
 import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
-import {
-  normalizeSandboxInput,
-  type CreateSandboxInput,
-} from '~/lib/sandboxes'
+import type { CreateSandboxInput } from '~/lib/sandboxes'
+import { normalizeSandboxInput } from '~/lib/sandboxes'
 
 type SandboxMutationInput = {
   sandboxId: string
+}
+
+type GithubBranchListInput = {
+  repoFullName: string
+}
+
+type GithubApiRepo = {
+  id: number
+  full_name: string
+  clone_url: string
+  default_branch: string
+  private: boolean
+}
+
+type GithubApiBranch = {
+  name: string
+}
+
+export type GithubRepoOption = {
+  id: number
+  fullName: string
+  cloneUrl: string
+  defaultBranch: string
+  private: boolean
 }
 
 function getErrorMessage(error: unknown) {
@@ -56,6 +78,69 @@ async function getGithubAccessToken(userId: string) {
   return tokens.data[0]?.token ?? null
 }
 
+async function getRequiredGithubAccessToken(userId: string) {
+  const githubToken = await getGithubAccessToken(userId)
+
+  if (!githubToken) {
+    throw new Error('Connect GitHub in Clerk before fetching repositories.')
+  }
+
+  return githubToken
+}
+
+async function githubRequest<T>(githubToken: string, path: string) {
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${githubToken}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  })
+
+  if (response.ok) {
+    return (await response.json()) as T
+  }
+
+  let githubMessage = 'GitHub could not complete that request.'
+
+  try {
+    const error = (await response.json()) as { message?: string }
+
+    if (error.message) {
+      githubMessage = error.message
+    }
+  } catch {
+    // Fall back to the generic message when GitHub returns a non-JSON body.
+  }
+
+  if (response.status === 401) {
+    throw new Error('Your GitHub access expired. Refresh the GitHub connection in Clerk and try again.')
+  }
+
+  if (response.status === 403) {
+    throw new Error('GitHub denied access. Refresh the GitHub connection in Clerk and make sure repo access is granted.')
+  }
+
+  throw new Error(githubMessage)
+}
+
+async function fetchGithubRepos(githubToken: string) {
+  const repos: Array<GithubApiRepo> = []
+
+  for (let page = 1; ; page += 1) {
+    const nextPage = await githubRequest<Array<GithubApiRepo>>(
+      githubToken,
+      `/user/repos?affiliation=owner,collaborator,organization_member&per_page=100&sort=updated&page=${page}`,
+    )
+
+    repos.push(...nextPage)
+
+    if (nextPage.length < 100) {
+      return repos
+    }
+  }
+}
+
 export const checkGithubConnection = createServerFn({ method: 'GET' }).handler(
   async () => {
     const { userId } = await getAuthenticatedConvexClient()
@@ -69,6 +154,43 @@ export const checkGithubConnection = createServerFn({ method: 'GET' }).handler(
     }
   },
 )
+
+export const listGithubRepos = createServerFn({ method: 'GET' }).handler(
+  async () => {
+    const { userId } = await getAuthenticatedConvexClient()
+    const githubToken = await getRequiredGithubAccessToken(userId)
+    const repos = await fetchGithubRepos(githubToken)
+    const repoOptions: Array<GithubRepoOption> = repos.map((repo) => ({
+      id: repo.id,
+      fullName: repo.full_name,
+      cloneUrl: repo.clone_url,
+      defaultBranch: repo.default_branch,
+      private: repo.private,
+    }))
+
+    return repoOptions
+  },
+)
+
+export const listGithubBranches = createServerFn({ method: 'POST' })
+  .inputValidator((data: GithubBranchListInput) => data)
+  .handler(async ({ data }) => {
+    const repoFullName = data.repoFullName.trim()
+    const [owner, repo, ...rest] = repoFullName.split('/')
+
+    if (!owner || !repo || rest.length > 0) {
+      throw new Error('Choose a valid GitHub repository before fetching branches.')
+    }
+
+    const { userId } = await getAuthenticatedConvexClient()
+    const githubToken = await getRequiredGithubAccessToken(userId)
+    const branches = await githubRequest<Array<GithubApiBranch>>(
+      githubToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`,
+    )
+
+    return branches.map((branch) => branch.name)
+  })
 
 export const createSandbox = createServerFn({ method: 'POST' })
   .inputValidator((data: CreateSandboxInput) => data)
