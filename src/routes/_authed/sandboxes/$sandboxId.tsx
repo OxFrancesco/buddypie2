@@ -4,7 +4,12 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
+import { Alert, AlertDescription } from '~/components/ui/alert'
+import { Badge } from '~/components/ui/badge'
+import { Button } from '~/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { StatusPill } from '~/components/status-pill'
+import { getSafeOpenCodeAgentPreset } from '~/lib/opencode/presets'
 import {
   deleteSandbox,
   restartSandbox,
@@ -101,149 +106,192 @@ function SandboxDetailRoute() {
 
   if (!sandbox) {
     return (
-      <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-8 text-white/65 shadow-[0_24px_80px_rgba(5,8,20,0.42)] backdrop-blur-xl">
-        <h2 className="text-2xl font-semibold text-white">Workspace missing</h2>
-        <p className="mt-3 max-w-xl text-sm leading-7">
-          This sandbox no longer exists or you do not have access to it.
-        </p>
-        <Link
-          to="/dashboard"
-          className="mt-6 inline-flex rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-emerald-200"
-        >
-          Back to dashboard
-        </Link>
-      </div>
+      <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
+        <CardHeader>
+          <CardTitle className="text-2xl font-black uppercase">
+            Workspace missing
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            This sandbox no longer exists or you don't have access.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <Button
+            asChild
+            className="border-2 border-foreground bg-foreground font-black uppercase text-background shadow-[3px_3px_0_var(--accent)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
+          >
+            <Link to="/dashboard">
+              ← Back to dashboard
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
     )
   }
 
+  const preset = getSafeOpenCodeAgentPreset(sandbox.agentPresetId)
+  const presetLabel = sandbox.agentLabel ?? preset.label
+  const presetProvider = sandbox.agentProvider ?? preset.provider
+  const presetModel = sandbox.agentModel ?? preset.model
+
   return (
-    <main className="space-y-6">
-      <section className="rounded-[32px] border border-white/10 bg-white/[0.04] p-6 shadow-[0_24px_80px_rgba(5,8,20,0.42)] backdrop-blur-xl sm:p-8">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <Link
-              to="/dashboard"
-              className="text-xs uppercase tracking-[0.24em] text-white/45"
-            >
-              Back to dashboard
-            </Link>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <StatusPill status={sandbox.status} />
-              <span className="rounded-full border border-white/12 px-2.5 py-1 text-[11px] uppercase tracking-[0.24em] text-white/55">
-                {sandbox.repoProvider}
-              </span>
-            </div>
-            <h2 className="mt-5 text-4xl font-semibold tracking-[-0.05em] text-white">
-              {sandbox.repoName}
-            </h2>
-            <p className="mt-3 max-w-3xl break-all text-sm leading-7 text-white/55">
-              {sandbox.repoUrl}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={handleRestart}
-              disabled={isBusy}
-              className="rounded-full border border-white/12 px-4 py-2 text-sm font-medium text-white transition hover:border-white/30 hover:bg-white/6 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Restart workspace
-            </button>
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={isBusy}
-              className="rounded-full border border-rose-400/25 px-4 py-2 text-sm font-medium text-rose-100 transition hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Delete workspace
-            </button>
-          </div>
-        </div>
-
-        {error ? (
-          <div className="mt-5 rounded-2xl border border-rose-400/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
-            {error}
-          </div>
-        ) : null}
-
-        <div className="mt-8 grid gap-4 lg:grid-cols-3">
-          <div className="rounded-[24px] border border-white/10 bg-black/15 p-4">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-white/40">
-              Branch
-            </p>
-            <p className="mt-2 text-sm font-medium text-white/85">
-              {sandbox.repoBranch || 'default'}
-            </p>
-          </div>
-          <div className="rounded-[24px] border border-white/10 bg-black/15 p-4">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-white/40">
-              Workspace path
-            </p>
-            <p className="mt-2 break-all text-sm font-medium text-white/85">
-              {sandbox.workspacePath || 'Provisioning workspace...'}
-            </p>
-          </div>
-          <div className="rounded-[24px] border border-white/10 bg-black/15 p-4">
-            <p className="text-[11px] uppercase tracking-[0.24em] text-white/40">
-              Preview
-            </p>
-            {sandbox.previewUrl ? (
-              <a
-                href={sandbox.previewUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex text-sm font-medium text-emerald-200 hover:text-emerald-100"
+    <main className="flex flex-col gap-6">
+      <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
+        <CardHeader>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="flex flex-col gap-3">
+              <Link
+                to="/dashboard"
+                className="text-xs font-black uppercase tracking-widest text-muted-foreground hover:text-foreground"
               >
-                Open in a new tab
-              </a>
-            ) : (
-              <p className="mt-2 text-sm font-medium text-white/55">
-                Waiting for OpenCode to boot...
+                ← Dashboard
+              </Link>
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusPill status={sandbox.status} />
+                <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
+                  {sandbox.repoProvider}
+                </Badge>
+                <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
+                  {presetLabel}
+                </Badge>
+              </div>
+              <CardTitle className="text-3xl font-black uppercase sm:text-4xl">
+                {sandbox.repoName}
+              </CardTitle>
+              <p className="break-all text-sm text-muted-foreground">
+                {sandbox.repoUrl}
               </p>
-            )}
-          </div>
-        </div>
-      </section>
+            </div>
 
-      <section className="overflow-hidden rounded-[32px] border border-white/10 bg-black/25 shadow-[0_24px_80px_rgba(5,8,20,0.42)]">
+            <div className="flex flex-wrap gap-3">
+              <Button
+                variant="outline"
+                onClick={handleRestart}
+                disabled={isBusy}
+                className="border-2 border-foreground text-sm font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+              >
+                Restart
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleDelete}
+                disabled={isBusy}
+                className="border-2 border-foreground text-sm font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          {error ? (
+            <Alert variant="destructive" className="mb-4 border-2 border-foreground">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-5">
+            <div className="border-2 border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Branch
+              </p>
+              <p className="mt-2 font-bold">{sandbox.repoBranch || 'default'}</p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Preset
+              </p>
+              <p className="mt-2 font-bold">{presetLabel}</p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Model
+              </p>
+              <p className="mt-2 font-bold">
+                {presetProvider} / {presetModel}
+              </p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Workspace
+              </p>
+              <p className="mt-2 break-all font-bold">
+                {sandbox.workspacePath || 'Provisioning...'}
+              </p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Preview
+              </p>
+              {sandbox.previewUrl ? (
+                <a
+                  href={sandbox.previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-block font-bold text-accent-foreground underline decoration-2 underline-offset-4 hover:text-foreground"
+                >
+                  Open in new tab →
+                </a>
+              ) : (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Waiting for OpenCode...
+                </p>
+              )}
+            </div>
+          </div>
+
+          {sandbox.initialPrompt ? (
+            <div className="mt-4 border-2 border-dashed border-foreground bg-muted p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Kickoff Prompt
+              </p>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
+                {sandbox.initialPrompt}
+              </p>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <div className="border-2 border-foreground bg-card shadow-[4px_4px_0_var(--foreground)]">
         {sandbox.previewUrl && sandbox.status === 'ready' ? (
           <div>
-            <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-              <p className="text-sm font-medium text-white/75">
-                OpenCode web interface
+            <div className="flex items-center justify-between border-b-2 border-foreground px-5 py-3">
+              <p className="text-sm font-black uppercase tracking-widest">
+                OpenCode
               </p>
               <a
                 href={sandbox.previewUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="text-sm font-medium text-emerald-200 hover:text-emerald-100"
+                className="text-sm font-bold underline decoration-2 underline-offset-4"
               >
-                Open in new tab
+                New tab →
               </a>
             </div>
             <iframe
               title={`${sandbox.repoName} OpenCode workspace`}
               src={sandbox.previewUrl}
-              className="h-[78vh] w-full bg-[#050816]"
+              className="h-[78vh] w-full bg-background"
             />
           </div>
         ) : (
-          <div className="flex min-h-[420px] items-center justify-center px-6 py-12 text-center text-white/55">
-            <div className="max-w-xl">
-              <h3 className="text-2xl font-semibold text-white">
+          <div className="flex min-h-[420px] items-center justify-center p-12 text-center">
+            <div className="max-w-md">
+              <h3 className="text-2xl font-black uppercase">
                 {sandbox.status === 'failed'
-                  ? 'The workspace did not finish starting.'
-                  : 'The workspace is still booting.'}
+                  ? 'Workspace failed.'
+                  : 'Booting workspace...'}
               </h3>
-              <p className="mt-4 text-sm leading-7">
+              <p className="mt-4 text-sm text-muted-foreground">
                 {sandbox.errorMessage ||
-                  'Once OpenCode is reachable, the embedded preview will appear here automatically. You can also restart the workspace if it looks stuck.'}
+                  'The embedded preview will appear here once OpenCode is reachable. Try restarting if stuck.'}
               </p>
             </div>
           </div>
         )}
-      </section>
+      </div>
     </main>
   )
 }

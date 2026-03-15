@@ -2,6 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
 import type { CreateSandboxInput } from '~/lib/sandboxes'
+import { getSafeOpenCodeAgentPreset } from '~/lib/opencode/presets'
 import { normalizeSandboxInput } from '~/lib/sandboxes'
 
 type SandboxMutationInput = {
@@ -30,6 +31,13 @@ export type GithubRepoOption = {
   cloneUrl: string
   defaultBranch: string
   private: boolean
+}
+
+type LaunchedSandbox = {
+  daytonaSandboxId: string
+  previewUrl: string
+  workspacePath: string
+  opencodeSessionId?: string
 }
 
 function getErrorMessage(error: unknown) {
@@ -124,21 +132,30 @@ async function githubRequest<T>(githubToken: string, path: string) {
   throw new Error(githubMessage)
 }
 
-async function fetchGithubRepos(githubToken: string) {
-  const repos: Array<GithubApiRepo> = []
+function resolveSandboxPreset(input: {
+  agentPresetId?: string
+  agentLabel?: string
+  agentProvider?: string
+  agentModel?: string
+  initialPrompt?: string
+}) {
+  const preset = getSafeOpenCodeAgentPreset(input.agentPresetId)
 
-  for (let page = 1; ; page += 1) {
-    const nextPage = await githubRequest<Array<GithubApiRepo>>(
-      githubToken,
-      `/user/repos?affiliation=owner,collaborator,organization_member&per_page=100&sort=updated&page=${page}`,
-    )
-
-    repos.push(...nextPage)
-
-    if (nextPage.length < 100) {
-      return repos
-    }
+  return {
+    agentPresetId: preset.id,
+    agentLabel: input.agentLabel ?? preset.label,
+    agentProvider: input.agentProvider ?? preset.provider,
+    agentModel: input.agentModel ?? preset.model,
+    initialPrompt: input.initialPrompt?.trim() || preset.starterPrompt,
   }
+}
+
+async function fetchGithubRepos(githubToken: string) {
+  // Keep the launcher lightweight by fetching only the user's most recent repos.
+  return githubRequest<Array<GithubApiRepo>>(
+    githubToken,
+    '/user/repos?affiliation=owner,collaborator,organization_member&sort=pushed&direction=desc&per_page=10',
+  )
 }
 
 export const checkGithubConnection = createServerFn({ method: 'GET' }).handler(
@@ -204,7 +221,13 @@ export const createSandbox = createServerFn({ method: 'POST' })
       repoName: normalized.repoName,
       repoBranch: normalized.branch,
       repoProvider: normalized.repoProvider,
+      agentPresetId: normalized.agentPresetId,
+      agentLabel: normalized.agentLabel,
+      agentProvider: normalized.agentProvider,
+      agentModel: normalized.agentModel,
+      initialPrompt: normalized.initialPrompt,
     })
+    let launched: LaunchedSandbox | null = null
 
     try {
       const githubToken =
@@ -212,9 +235,11 @@ export const createSandbox = createServerFn({ method: 'POST' })
           ? await getGithubAccessToken(userId)
           : null
       const { createOpenCodeSandbox } = await import('~/lib/server/daytona')
-      const launched = await createOpenCodeSandbox({
+      launched = await createOpenCodeSandbox({
         repoUrl: normalized.repoUrl,
         branch: normalized.branch,
+        agentPresetId: normalized.agentPresetId,
+        initialPrompt: normalized.initialPrompt,
         githubToken,
       })
       const readySandbox = await convex.mutation(api.sandboxes.markReady, {
@@ -222,6 +247,7 @@ export const createSandbox = createServerFn({ method: 'POST' })
         daytonaSandboxId: launched.daytonaSandboxId,
         previewUrl: launched.previewUrl,
         workspacePath: launched.workspacePath,
+        opencodeSessionId: launched.opencodeSessionId,
       })
 
       return {
@@ -230,6 +256,15 @@ export const createSandbox = createServerFn({ method: 'POST' })
       }
     } catch (error) {
       const message = getErrorMessage(error)
+
+      if (launched?.daytonaSandboxId) {
+        try {
+          const { deleteOpenCodeSandbox } = await import('~/lib/server/daytona')
+          await deleteOpenCodeSandbox(launched.daytonaSandboxId)
+        } catch {
+          // Best effort cleanup if the post-launch persistence step fails.
+        }
+      }
 
       await convex.mutation(api.sandboxes.markFailed, {
         sandboxId: pendingSandbox._id,
@@ -279,13 +314,20 @@ export const restartSandbox = createServerFn({ method: 'POST' })
     if (!sandbox) {
       throw new Error('Sandbox not found.')
     }
+    const restartPreset = resolveSandboxPreset(sandbox)
 
     const pendingSandbox = await convex.mutation(api.sandboxes.createPending, {
       repoUrl: sandbox.repoUrl,
       repoName: sandbox.repoName,
       repoBranch: sandbox.repoBranch,
       repoProvider: sandbox.repoProvider,
+      agentPresetId: restartPreset.agentPresetId,
+      agentLabel: restartPreset.agentLabel,
+      agentProvider: restartPreset.agentProvider,
+      agentModel: restartPreset.agentModel,
+      initialPrompt: restartPreset.initialPrompt,
     })
+    let launched: LaunchedSandbox | null = null
 
     try {
       const githubToken =
@@ -295,9 +337,11 @@ export const restartSandbox = createServerFn({ method: 'POST' })
       const { createOpenCodeSandbox, deleteOpenCodeSandbox } = await import(
         '~/lib/server/daytona'
       )
-      const launched = await createOpenCodeSandbox({
+      launched = await createOpenCodeSandbox({
         repoUrl: sandbox.repoUrl,
         branch: sandbox.repoBranch,
+        agentPresetId: restartPreset.agentPresetId,
+        initialPrompt: restartPreset.initialPrompt,
         githubToken,
       })
       const readySandbox = await convex.mutation(api.sandboxes.markReady, {
@@ -305,6 +349,7 @@ export const restartSandbox = createServerFn({ method: 'POST' })
         daytonaSandboxId: launched.daytonaSandboxId,
         previewUrl: launched.previewUrl,
         workspacePath: launched.workspacePath,
+        opencodeSessionId: launched.opencodeSessionId,
       })
 
       if (sandbox.daytonaSandboxId) {
@@ -325,6 +370,15 @@ export const restartSandbox = createServerFn({ method: 'POST' })
       }
     } catch (error) {
       const message = getErrorMessage(error)
+
+      if (launched?.daytonaSandboxId) {
+        try {
+          const { deleteOpenCodeSandbox } = await import('~/lib/server/daytona')
+          await deleteOpenCodeSandbox(launched.daytonaSandboxId)
+        } catch {
+          // Best effort cleanup if the post-launch persistence step fails.
+        }
+      }
 
       await convex.mutation(api.sandboxes.markFailed, {
         sandboxId: pendingSandbox._id,

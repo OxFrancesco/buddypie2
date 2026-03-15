@@ -12,12 +12,18 @@ export const sandboxRecordValidator = v.object({
   repoName: v.string(),
   repoBranch: v.optional(v.string()),
   repoProvider: v.union(v.literal('github'), v.literal('git')),
+  agentPresetId: v.optional(v.string()),
+  agentLabel: v.optional(v.string()),
+  agentProvider: v.optional(v.string()),
+  agentModel: v.optional(v.string()),
+  initialPrompt: v.optional(v.string()),
   status: v.union(
     v.literal('creating'),
     v.literal('ready'),
     v.literal('failed'),
   ),
   daytonaSandboxId: v.optional(v.string()),
+  opencodeSessionId: v.optional(v.string()),
   previewUrl: v.optional(v.string()),
   workspacePath: v.optional(v.string()),
   errorMessage: v.optional(v.string()),
@@ -85,6 +91,11 @@ export const createPending = mutation({
     repoName: v.string(),
     repoBranch: v.optional(v.string()),
     repoProvider: v.union(v.literal('github'), v.literal('git')),
+    agentPresetId: v.string(),
+    agentLabel: v.string(),
+    agentProvider: v.string(),
+    agentModel: v.string(),
+    initialPrompt: v.optional(v.string()),
   },
   returns: sandboxRecordValidator,
   handler: async (ctx, args) => {
@@ -95,10 +106,15 @@ export const createPending = mutation({
       repoUrl: args.repoUrl,
       repoName: args.repoName,
       repoProvider: args.repoProvider,
+      agentPresetId: args.agentPresetId,
+      agentLabel: args.agentLabel,
+      agentProvider: args.agentProvider,
+      agentModel: args.agentModel,
       status: 'creating',
       createdAt: now,
       updatedAt: now,
       ...(args.repoBranch ? { repoBranch: args.repoBranch } : {}),
+      ...(args.initialPrompt ? { initialPrompt: args.initialPrompt } : {}),
     })
 
     const sandbox = await ctx.db.get(sandboxId)
@@ -117,6 +133,7 @@ export const markReady = mutation({
     daytonaSandboxId: v.string(),
     previewUrl: v.string(),
     workspacePath: v.string(),
+    opencodeSessionId: v.optional(v.string()),
   },
   returns: sandboxRecordValidator,
   handler: async (ctx, args) => {
@@ -127,6 +144,7 @@ export const markReady = mutation({
       daytonaSandboxId: args.daytonaSandboxId,
       previewUrl: args.previewUrl,
       workspacePath: args.workspacePath,
+      ...(args.opencodeSessionId ? { opencodeSessionId: args.opencodeSessionId } : {}),
       updatedAt: Date.now(),
     })
 

@@ -9,6 +9,7 @@ import {
   ClerkProvider,
   useAuth,
 } from '@clerk/tanstack-react-start'
+import { clerkAppearance } from '~/lib/clerk-appearance'
 import { TanStackRouterDevtools } from '@tanstack/react-router-devtools'
 import { createServerFn } from '@tanstack/react-start'
 import * as React from 'react'
@@ -105,7 +106,7 @@ function RootComponent() {
   const context = useRouteContext({ from: Route.id })
 
   return (
-    <ClerkProvider>
+    <ClerkProvider appearance={clerkAppearance}>
       <ConvexProviderWithClerk client={context.convexClient} useAuth={useAuth}>
         <RootDocument>
           <Outlet />
@@ -121,7 +122,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body className="min-h-screen bg-[#050816] text-white antialiased">
+      <body className="min-h-screen bg-background text-foreground antialiased">
         {children}
         <TanStackRouterDevtools position="bottom-right" />
         <Scripts />

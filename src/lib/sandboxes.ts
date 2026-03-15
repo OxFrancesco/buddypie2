@@ -1,14 +1,29 @@
+import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
+import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
+
+const MAX_INITIAL_PROMPT_LENGTH = 10_000
+
 export type CreateSandboxInput = {
   repoUrl: string
   branch?: string
+  agentPresetId: OpenCodeAgentPresetId
+  initialPrompt?: string
 }
 
 export function normalizeSandboxInput(input: CreateSandboxInput) {
   const repoUrl = input.repoUrl.trim()
   const branch = input.branch?.trim() || undefined
+  const preset = getOpenCodeAgentPreset(input.agentPresetId)
+  const initialPrompt = input.initialPrompt?.trim() || preset.starterPrompt
 
   if (!repoUrl) {
     throw new Error('A repository URL is required.')
+  }
+
+  if (initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH) {
+    throw new Error(
+      `The kickoff prompt is too long. Keep it under ${MAX_INITIAL_PROMPT_LENGTH.toLocaleString()} characters.`,
+    )
   }
 
   let parsedUrl: URL
@@ -39,6 +54,11 @@ export function normalizeSandboxInput(input: CreateSandboxInput) {
     branch,
     repoName,
     repoProvider: isGitHubRepo(parsedUrl) ? ('github' as const) : ('git' as const),
+    agentPresetId: preset.id,
+    agentLabel: preset.label,
+    agentProvider: preset.provider,
+    agentModel: preset.model,
+    initialPrompt,
   }
 }
 

@@ -1,20 +1,28 @@
+import { Badge } from '~/components/ui/badge'
+
 type SandboxStatus = 'creating' | 'ready' | 'failed'
 
-const statusStyles: Record<SandboxStatus, string> = {
-  creating:
-    'border-amber-400/30 bg-amber-500/10 text-amber-200 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]',
-  ready:
-    'border-emerald-400/30 bg-emerald-500/10 text-emerald-200 shadow-[0_0_0_1px_rgba(52,211,153,0.08)]',
-  failed:
-    'border-rose-400/30 bg-rose-500/10 text-rose-200 shadow-[0_0_0_1px_rgba(251,113,133,0.08)]',
+const statusConfig: Record<SandboxStatus, { label: string; className: string }> = {
+  creating: {
+    label: 'CREATING',
+    className: 'border-2 border-foreground bg-accent text-foreground',
+  },
+  ready: {
+    label: 'READY',
+    className: 'border-2 border-foreground bg-foreground text-background',
+  },
+  failed: {
+    label: 'FAILED',
+    className: 'border-2 border-foreground bg-destructive text-white',
+  },
 }
 
 export function StatusPill({ status }: { status: SandboxStatus }) {
+  const config = statusConfig[status]
+
   return (
-    <span
-      className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] ${statusStyles[status]}`}
-    >
-      {status}
-    </span>
+    <Badge variant="outline" className={`font-black uppercase tracking-widest ${config.className}`}>
+      {config.label}
+    </Badge>
   )
 }
