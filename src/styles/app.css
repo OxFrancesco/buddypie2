@@ -1,0 +1,46 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-[#050816] text-white;
+    font-family:
+      'SF Pro Display', 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial,
+      sans-serif;
+  }
+
+  body {
+    min-height: 100vh;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+    background-position: center;
+    background-size: 72px 72px;
+  }
+
+  .using-mouse * {
+    outline: none !important;
+  }
+
+  * {
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  a,
+  button,
+  input,
+  textarea,
+  select,
+  iframe {
+    @apply transition;
+  }
+
+  ::selection {
+    background: rgba(110, 231, 183, 0.3);
+    color: white;
+  }
+}
