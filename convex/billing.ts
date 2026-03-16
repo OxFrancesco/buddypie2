@@ -1,9 +1,6 @@
 import { ConvexError, v } from 'convex/values'
 import { internalMutation, mutation, query } from './_generated/server'
-import {
-  requireCurrentUserRecord,
-  requireUserRecordByTokenIdentifier,
-} from './lib/auth'
+import { requireCurrentUserRecord } from './lib/auth'
 import {
   BILLING_ASSET,
   BILLING_CURRENCY,
@@ -231,7 +228,6 @@ export const sandboxUsage = query({
 
 export const recordFundingTopup = internalMutation({
   args: {
-    tokenIdentifier: v.string(),
     amountUsdCents: v.number(),
     paymentReference: v.string(),
     idempotencyKey: v.string(),
@@ -241,10 +237,7 @@ export const recordFundingTopup = internalMutation({
   },
   returns: billingAccountValidator,
   handler: async (ctx, args) => {
-    const user = await requireUserRecordByTokenIdentifier(
-      ctx,
-      args.tokenIdentifier,
-    )
+    const user = await requireCurrentUserRecord(ctx)
 
     return await creditFundingTopup(ctx, {
       userId: user._id,
@@ -278,7 +271,7 @@ export const allocateReserve = mutation({
   },
 })
 
-export const createSandboxEventLease = mutation({
+export const createSandboxEventLease = internalMutation({
   args: {
     sandboxId: v.id('sandboxes'),
     eventType: runtimeUsageEventTypeValidator,
@@ -310,7 +303,7 @@ export const createSandboxEventLease = mutation({
   },
 })
 
-export const captureSandboxEventLease = mutation({
+export const captureSandboxEventLease = internalMutation({
   args: {
     leaseId: v.id('reserveLeases'),
     sandboxId: v.id('sandboxes'),
@@ -356,7 +349,7 @@ export const captureSandboxEventLease = mutation({
   },
 })
 
-export const releaseLease = mutation({
+export const releaseLease = internalMutation({
   args: {
     leaseId: v.id('reserveLeases'),
     reason: v.string(),

@@ -143,7 +143,8 @@ function resolveSandboxPreset(input: {
 }
 
 async function withSandboxEventLease<T>(args: {
-  convex: Awaited<ReturnType<typeof getAuthenticatedConvexClient>>['convex']
+  convexUrl: string
+  token: string
   sandboxId: Id<'sandboxes'>
   eventType: 'preview_boot' | 'ssh_access' | 'web_terminal'
   quantitySummary?: string
@@ -153,40 +154,100 @@ async function withSandboxEventLease<T>(args: {
   shouldCapture?: (result: T) => boolean
   releaseReason?: string
 }) {
-  const lease = await args.convex.mutation(api.billing.createSandboxEventLease, {
-    sandboxId: args.sandboxId,
-    eventType: args.eventType,
-    idempotencyKey: args.idempotencyKey,
-    quantitySummary: args.quantitySummary,
+  const leaseResponse = await fetch(`${args.convexUrl}/billing/leases/create`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${args.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sandboxId: args.sandboxId,
+      eventType: args.eventType,
+      idempotencyKey: args.idempotencyKey,
+      quantitySummary: args.quantitySummary,
+    }),
   })
+
+  if (!leaseResponse.ok) {
+    const error = (await leaseResponse.json().catch(() => null)) as
+      | { error?: string }
+      | null
+
+    throw new Error(error?.error ?? `Could not create ${args.eventType} lease.`)
+  }
+
+  const lease = (await leaseResponse.json()) as { _id: string }
 
   try {
     const result = await args.action()
 
     if (args.shouldCapture && !args.shouldCapture(result)) {
-      await args.convex.mutation(api.billing.releaseLease, {
-        leaseId: lease._id,
-        reason: args.releaseReason ?? `No charge captured for ${args.eventType}.`,
-      })
+      const releaseResponse = await fetch(
+        `${args.convexUrl}/billing/leases/release`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${args.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            leaseId: lease._id,
+            reason: args.releaseReason ?? `No charge captured for ${args.eventType}.`,
+          }),
+        },
+      )
+
+      if (!releaseResponse.ok) {
+        const error = (await releaseResponse.json().catch(() => null)) as
+          | { error?: string }
+          | null
+
+        throw new Error(error?.error ?? `Could not release ${args.eventType} lease.`)
+      }
 
       return result
     }
 
-    await args.convex.mutation(api.billing.captureSandboxEventLease, {
-      leaseId: lease._id,
-      sandboxId: args.sandboxId,
-      eventType: args.eventType,
-      idempotencyKey: `capture:${args.idempotencyKey}`,
-      description: args.description,
-      quantitySummary: args.quantitySummary,
-    })
+    const captureResponse = await fetch(
+      `${args.convexUrl}/billing/leases/capture`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${args.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leaseId: lease._id,
+          sandboxId: args.sandboxId,
+          eventType: args.eventType,
+          idempotencyKey: `capture:${args.idempotencyKey}`,
+          description: args.description,
+          quantitySummary: args.quantitySummary,
+        }),
+      },
+    )
+
+    if (!captureResponse.ok) {
+      const error = (await captureResponse.json().catch(() => null)) as
+        | { error?: string }
+        | null
+
+      throw new Error(error?.error ?? `Could not capture ${args.eventType} lease.`)
+    }
 
     return result
   } catch (error) {
     try {
-      await args.convex.mutation(api.billing.releaseLease, {
-        leaseId: lease._id,
-        reason: args.releaseReason ?? `${args.eventType} failed before capture.`,
+      await fetch(`${args.convexUrl}/billing/leases/release`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${args.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leaseId: lease._id,
+          reason: args.releaseReason ?? `${args.eventType} failed before capture.`,
+        }),
       })
     } catch {
       // Best effort cleanup if the action throws after the lease is held.
@@ -325,7 +386,7 @@ export const createSandbox = createServerFn({ method: 'POST' })
 export const deleteSandbox = createServerFn({ method: 'POST' })
   .inputValidator((data: SandboxMutationInput) => data)
   .handler(async ({ data }) => {
-    const { convex } = await getAuthenticatedConvexClient()
+    const { convex, convexUrl, token } = await getAuthenticatedConvexClient()
     const sandbox = await convex.query(api.sandboxes.get, {
       sandboxId: data.sandboxId as Id<'sandboxes'>,
     })
@@ -378,7 +439,8 @@ export const ensureAppPreviewServer = createServerFn({ method: 'POST' })
     const previewAttemptKey = `preview-boot:${sandbox._id}:${port}:${Date.now()}`
 
     return await withSandboxEventLease({
-      convex,
+      convexUrl,
+      token,
       sandboxId: sandbox._id,
       eventType: 'preview_boot',
       idempotencyKey: previewAttemptKey,
@@ -404,7 +466,7 @@ export const getAppPreviewLogs = createServerFn({ method: 'POST' })
       throw new Error('Choose a valid preview port between 1 and 65535.')
     }
 
-    const { convex } = await getAuthenticatedConvexClient()
+    const { convex, convexUrl, token } = await getAuthenticatedConvexClient()
     const sandbox = await convex.query(api.sandboxes.get, {
       sandboxId: data.sandboxId as Id<'sandboxes'>,
     })
@@ -448,7 +510,8 @@ export const createTerminalAccess = createServerFn({ method: 'POST' })
     const sshAttemptKey = `ssh-access:${sandbox._id}:${Date.now()}`
 
     return await withSandboxEventLease({
-      convex,
+      convexUrl,
+      token,
       sandboxId: sandbox._id,
       eventType: 'ssh_access',
       idempotencyKey: sshAttemptKey,
@@ -472,7 +535,7 @@ export const getPortPreview = createServerFn({ method: 'POST' })
       throw new Error('Choose a valid preview port between 1 and 65535.')
     }
 
-    const { convex } = await getAuthenticatedConvexClient()
+    const { convex, convexUrl, token } = await getAuthenticatedConvexClient()
     const sandbox = await convex.query(api.sandboxes.get, {
       sandboxId: data.sandboxId as Id<'sandboxes'>,
     })
@@ -492,7 +555,8 @@ export const getPortPreview = createServerFn({ method: 'POST' })
       const terminalAttemptKey = `web-terminal:${sandbox._id}:${port}:${Date.now()}`
 
       return await withSandboxEventLease({
-        convex,
+        convexUrl,
+        token,
         sandboxId: sandbox._id,
         eventType: 'web_terminal',
         idempotencyKey: terminalAttemptKey,
