@@ -1,6 +1,9 @@
 import { ConvexError, v } from 'convex/values'
-import { mutation, query } from './_generated/server'
-import { requireCurrentUserRecord } from './lib/auth'
+import { internalMutation, mutation, query } from './_generated/server'
+import {
+  requireCurrentUserRecord,
+  requireUserRecordByTokenIdentifier,
+} from './lib/auth'
 import {
   BILLING_ASSET,
   BILLING_CURRENCY,
@@ -220,8 +223,9 @@ export const sandboxUsage = query({
   },
 })
 
-export const recordFundingTopup = mutation({
+export const recordFundingTopup = internalMutation({
   args: {
+    tokenIdentifier: v.string(),
     amountUsdCents: v.number(),
     paymentReference: v.string(),
     idempotencyKey: v.string(),
@@ -231,7 +235,10 @@ export const recordFundingTopup = mutation({
   },
   returns: billingAccountValidator,
   handler: async (ctx, args) => {
-    const user = await requireCurrentUserRecord(ctx)
+    const user = await requireUserRecordByTokenIdentifier(
+      ctx,
+      args.tokenIdentifier,
+    )
 
     return await creditFundingTopup(ctx, {
       userId: user._id,

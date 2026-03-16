@@ -343,7 +343,7 @@ export async function allocateFundingToReserve(
   await ctx.db.patch(reserve._id, {
     allocatedUsdCents: reserve.allocatedUsdCents + args.amountUsdCents,
     availableUsdCents: reserve.availableUsdCents + args.amountUsdCents,
-    ...(args.lowBalanceThresholdUsdCents
+    ...(args.lowBalanceThresholdUsdCents !== undefined
       ? { lowBalanceThresholdUsdCents: args.lowBalanceThresholdUsdCents }
       : {}),
     version: reserve.version + 1,

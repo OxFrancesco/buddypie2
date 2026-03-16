@@ -25,6 +25,8 @@ export async function getAuthenticatedConvexClient() {
 
   return {
     convex,
+    convexUrl,
+    token,
     userId: session.userId,
   }
 }
