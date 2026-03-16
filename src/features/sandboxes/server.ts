@@ -372,6 +372,8 @@ export const ensureAppPreviewServer = createServerFn({ method: 'POST' })
       throw new Error('Sandbox runtime is not ready for app preview yet.')
     }
 
+    const daytonaSandboxId = sandbox.daytonaSandboxId
+    const workspacePath = sandbox.workspacePath
     const { ensureSandboxAppPreviewServer } = await import('~/lib/server/daytona')
     const previewAttemptKey = `preview-boot:${sandbox._id}:${port}:${Date.now()}`
 
@@ -386,8 +388,8 @@ export const ensureAppPreviewServer = createServerFn({ method: 'POST' })
       releaseReason: `Preview server on port ${port} did not need a new boot charge.`,
       action: async () =>
         await ensureSandboxAppPreviewServer({
-          daytonaSandboxId: sandbox.daytonaSandboxId,
-          workspacePath: sandbox.workspacePath,
+          daytonaSandboxId,
+          workspacePath,
           port,
         }),
     })
@@ -441,6 +443,7 @@ export const createTerminalAccess = createServerFn({ method: 'POST' })
       throw new Error('Sandbox runtime is not ready for terminal access yet.')
     }
 
+    const daytonaSandboxId = sandbox.daytonaSandboxId
     const { createSandboxSshAccessCommand } = await import('~/lib/server/daytona')
     const sshAttemptKey = `ssh-access:${sandbox._id}:${Date.now()}`
 
@@ -454,7 +457,7 @@ export const createTerminalAccess = createServerFn({ method: 'POST' })
       releaseReason: 'SSH access generation failed before capture.',
       action: async () =>
         await createSandboxSshAccessCommand({
-          daytonaSandboxId: sandbox.daytonaSandboxId,
+          daytonaSandboxId,
           expiresInMinutes: data.expiresInMinutes,
         }),
     })
@@ -482,6 +485,7 @@ export const getPortPreview = createServerFn({ method: 'POST' })
       throw new Error('Sandbox runtime is not ready for preview access yet.')
     }
 
+    const daytonaSandboxId = sandbox.daytonaSandboxId
     const { getSandboxPortPreviewUrl } = await import('~/lib/server/daytona')
 
     if (port === 22222) {
@@ -497,14 +501,14 @@ export const getPortPreview = createServerFn({ method: 'POST' })
         releaseReason: 'Web terminal access failed before capture.',
         action: async () =>
           await getSandboxPortPreviewUrl({
-            daytonaSandboxId: sandbox.daytonaSandboxId,
+            daytonaSandboxId,
             port,
           }),
       })
     }
 
     return await getSandboxPortPreviewUrl({
-      daytonaSandboxId: sandbox.daytonaSandboxId,
+      daytonaSandboxId,
       port,
     })
   })

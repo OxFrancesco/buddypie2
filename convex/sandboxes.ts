@@ -195,13 +195,13 @@ export const markReady = mutation({
       updatedAt: Date.now(),
     })
 
-    const sandbox = await ctx.db.get(args.sandboxId)
+    const updatedSandbox = await ctx.db.get(args.sandboxId)
 
-    if (!sandbox) {
+    if (!updatedSandbox) {
       throw new ConvexError('Sandbox not found after launch.')
     }
 
-    return sandbox
+    return updatedSandbox
   },
 })
 
@@ -227,13 +227,13 @@ export const markFailed = mutation({
       updatedAt: Date.now(),
     })
 
-    const sandbox = await ctx.db.get(args.sandboxId)
+    const updatedSandbox = await ctx.db.get(args.sandboxId)
 
-    if (!sandbox) {
+    if (!updatedSandbox) {
       throw new ConvexError('Sandbox not found after failure.')
     }
 
-    return sandbox
+    return updatedSandbox
   },
 })
 
