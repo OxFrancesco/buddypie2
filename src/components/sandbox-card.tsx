@@ -35,8 +35,6 @@ export function SandboxCard({
 }: SandboxCardProps) {
   const preset = getSafeOpenCodeAgentPreset(sandbox.agentPresetId)
   const presetLabel = sandbox.agentLabel ?? preset.label
-  const presetProvider = sandbox.agentProvider ?? preset.provider
-  const presetModel = sandbox.agentModel ?? preset.model
 
   return (
     <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
@@ -44,9 +42,6 @@ export function SandboxCard({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill status={sandbox.status} />
-            <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
-              {sandbox.repoProvider}
-            </Badge>
             <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
               {presetLabel}
             </Badge>
@@ -77,20 +72,12 @@ export function SandboxCard({
       </CardHeader>
 
       <CardContent>
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-3 lg:grid-cols-2">
           <div className="border-2 border-foreground bg-muted p-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
               Branch
             </p>
             <p className="mt-1 font-bold">{sandbox.repoBranch || 'default'}</p>
-          </div>
-          <div className="border-2 border-foreground bg-muted p-3">
-            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-              Model
-            </p>
-            <p className="mt-1 font-bold">
-              {presetProvider} / {presetModel}
-            </p>
           </div>
           <div className="border-2 border-foreground bg-muted p-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">

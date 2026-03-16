@@ -12,7 +12,7 @@ Add these values to your local `.env` before starting the app:
 - `CLERK_JWT_ISSUER_DOMAIN`
 - `VITE_CONVEX_URL`
 - `DAYTONA_API_KEY`
-- `ZHIPU_API_KEY`
+- `ZAI_API_KEY`
 
 Optional:
 
@@ -38,7 +38,7 @@ selection to OpenCode itself.
 - Each preset can provide its own provider/model pair, AGENTS instructions,
   skills, MCP config, and seeded kickoff prompt.
 - Current presets use the `zai/glm-4.7` model pair and require
-  `ZHIPU_API_KEY`.
+  `ZAI_API_KEY`.
 
 When a sandbox launches, BuddyPie writes the preset-specific OpenCode files
 inside the sandbox, starts `opencode web`, then seeds the first session with

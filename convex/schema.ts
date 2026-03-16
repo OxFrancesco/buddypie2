@@ -32,6 +32,7 @@ export default defineSchema({
     daytonaSandboxId: v.optional(v.string()),
     opencodeSessionId: v.optional(v.string()),
     previewUrl: v.optional(v.string()),
+    previewUrlPattern: v.optional(v.string()),
     workspacePath: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
     createdAt: v.number(),

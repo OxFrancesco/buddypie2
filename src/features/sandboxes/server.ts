@@ -9,6 +9,27 @@ type SandboxMutationInput = {
   sandboxId: string
 }
 
+type EnsureAppPreviewServerInput = {
+  sandboxId: string
+  port: number
+}
+
+type GetAppPreviewLogInput = {
+  sandboxId: string
+  port: number
+  lines?: number
+}
+
+type CreateTerminalAccessInput = {
+  sandboxId: string
+  expiresInMinutes?: number
+}
+
+type GetPortPreviewInput = {
+  sandboxId: string
+  port: number
+}
+
 type GithubBranchListInput = {
   repoFullName: string
 }
@@ -36,6 +57,7 @@ export type GithubRepoOption = {
 type LaunchedSandbox = {
   daytonaSandboxId: string
   previewUrl: string
+  previewUrlPattern?: string
   workspacePath: string
   opencodeSessionId?: string
 }
@@ -246,6 +268,7 @@ export const createSandbox = createServerFn({ method: 'POST' })
         sandboxId: pendingSandbox._id,
         daytonaSandboxId: launched.daytonaSandboxId,
         previewUrl: launched.previewUrl,
+        previewUrlPattern: launched.previewUrlPattern,
         workspacePath: launched.workspacePath,
         opencodeSessionId: launched.opencodeSessionId,
       })
@@ -303,6 +326,123 @@ export const deleteSandbox = createServerFn({ method: 'POST' })
     return { removed: true as const }
   })
 
+export const ensureAppPreviewServer = createServerFn({ method: 'POST' })
+  .inputValidator((data: EnsureAppPreviewServerInput) => data)
+  .handler(async ({ data }) => {
+    const port = Number(data.port)
+
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error('Choose a valid preview port between 1 and 65535.')
+    }
+
+    const { convex } = await getAuthenticatedConvexClient()
+    const sandbox = await convex.query(api.sandboxes.get, {
+      sandboxId: data.sandboxId as Id<'sandboxes'>,
+    })
+
+    if (!sandbox) {
+      throw new Error('Sandbox not found.')
+    }
+
+    if (!sandbox.daytonaSandboxId || !sandbox.workspacePath) {
+      throw new Error('Sandbox runtime is not ready for app preview yet.')
+    }
+
+    const { ensureSandboxAppPreviewServer } = await import('~/lib/server/daytona')
+
+    return await ensureSandboxAppPreviewServer({
+      daytonaSandboxId: sandbox.daytonaSandboxId,
+      workspacePath: sandbox.workspacePath,
+      port,
+    })
+  })
+
+export const getAppPreviewLogs = createServerFn({ method: 'POST' })
+  .inputValidator((data: GetAppPreviewLogInput) => data)
+  .handler(async ({ data }) => {
+    const port = Number(data.port)
+
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error('Choose a valid preview port between 1 and 65535.')
+    }
+
+    const { convex } = await getAuthenticatedConvexClient()
+    const sandbox = await convex.query(api.sandboxes.get, {
+      sandboxId: data.sandboxId as Id<'sandboxes'>,
+    })
+
+    if (!sandbox) {
+      throw new Error('Sandbox not found.')
+    }
+
+    if (!sandbox.daytonaSandboxId || !sandbox.workspacePath) {
+      throw new Error('Sandbox runtime is not ready for log retrieval yet.')
+    }
+
+    const { getSandboxAppPreviewLogTail } = await import('~/lib/server/daytona')
+
+    return await getSandboxAppPreviewLogTail({
+      daytonaSandboxId: sandbox.daytonaSandboxId,
+      workspacePath: sandbox.workspacePath,
+      port,
+      lines: data.lines,
+    })
+  })
+
+export const createTerminalAccess = createServerFn({ method: 'POST' })
+  .inputValidator((data: CreateTerminalAccessInput) => data)
+  .handler(async ({ data }) => {
+    const { convex } = await getAuthenticatedConvexClient()
+    const sandbox = await convex.query(api.sandboxes.get, {
+      sandboxId: data.sandboxId as Id<'sandboxes'>,
+    })
+
+    if (!sandbox) {
+      throw new Error('Sandbox not found.')
+    }
+
+    if (!sandbox.daytonaSandboxId) {
+      throw new Error('Sandbox runtime is not ready for terminal access yet.')
+    }
+
+    const { createSandboxSshAccessCommand } = await import('~/lib/server/daytona')
+
+    return await createSandboxSshAccessCommand({
+      daytonaSandboxId: sandbox.daytonaSandboxId,
+      expiresInMinutes: data.expiresInMinutes,
+    })
+  })
+
+export const getPortPreview = createServerFn({ method: 'POST' })
+  .inputValidator((data: GetPortPreviewInput) => data)
+  .handler(async ({ data }) => {
+    const port = Number(data.port)
+
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error('Choose a valid preview port between 1 and 65535.')
+    }
+
+    const { convex } = await getAuthenticatedConvexClient()
+    const sandbox = await convex.query(api.sandboxes.get, {
+      sandboxId: data.sandboxId as Id<'sandboxes'>,
+    })
+
+    if (!sandbox) {
+      throw new Error('Sandbox not found.')
+    }
+
+    if (!sandbox.daytonaSandboxId) {
+      throw new Error('Sandbox runtime is not ready for preview access yet.')
+    }
+
+    const { getSandboxPortPreviewUrl } = await import('~/lib/server/daytona')
+
+    return await getSandboxPortPreviewUrl({
+      daytonaSandboxId: sandbox.daytonaSandboxId,
+      port,
+    })
+  })
+
 export const restartSandbox = createServerFn({ method: 'POST' })
   .inputValidator((data: SandboxMutationInput) => data)
   .handler(async ({ data }) => {
@@ -348,6 +488,7 @@ export const restartSandbox = createServerFn({ method: 'POST' })
         sandboxId: pendingSandbox._id,
         daytonaSandboxId: launched.daytonaSandboxId,
         previewUrl: launched.previewUrl,
+        previewUrlPattern: launched.previewUrlPattern,
         workspacePath: launched.workspacePath,
         opencodeSessionId: launched.opencodeSessionId,
       })

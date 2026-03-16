@@ -37,7 +37,7 @@ const openCodePresetMap = {
       'Balanced repo analysis and implementation for full-stack product work.',
     provider: 'zai',
     model: 'glm-4.7',
-    requiredEnv: ['ZHIPU_API_KEY'],
+    requiredEnv: ['ZAI_API_KEY'],
     agentPrompt:
       'Act as a pragmatic software engineer who starts with the smallest high-confidence plan, keeps changes scoped, and verifies important behavior before handing work back.',
     instructionsMd: `
@@ -124,7 +124,7 @@ Use this near the end of implementation before reporting completion back to the 
       'UI-focused preset for React, styling, accessibility, and polish work.',
     provider: 'zai',
     model: 'glm-4.7',
-    requiredEnv: ['ZHIPU_API_KEY'],
+    requiredEnv: ['ZAI_API_KEY'],
     agentPrompt:
       'Act as a frontend specialist. Optimize for UI clarity, responsive behavior, accessibility, and design-system consistency while keeping implementation grounded in the existing product.',
     instructionsMd: `
@@ -212,7 +212,7 @@ Use this after implementing UI changes and before reporting the result.
       'Documentation-focused preset for guides, READMEs, onboarding, and changelogs.',
     provider: 'zai',
     model: 'glm-4.7',
-    requiredEnv: ['ZHIPU_API_KEY'],
+    requiredEnv: ['ZAI_API_KEY'],
     agentPrompt:
       'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior.',
     instructionsMd: `
