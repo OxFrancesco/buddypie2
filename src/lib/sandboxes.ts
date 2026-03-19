@@ -1,19 +1,51 @@
 import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
-import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
+import {
+  getOpenCodeAgentPreset,
+  resolveOpenCodeModelOption,
+} from '~/lib/opencode/presets'
 
 const MAX_INITIAL_PROMPT_LENGTH = 10_000
+
+export type SandboxPaymentMethod = 'credits' | 'x402' | 'delegated_budget'
+
+export function isX402SandboxPaymentMethod(
+  paymentMethod: SandboxPaymentMethod,
+) {
+  return paymentMethod === 'x402'
+}
+
+export function isDelegatedBudgetSandboxPaymentMethod(
+  paymentMethod: SandboxPaymentMethod,
+) {
+  return paymentMethod === 'delegated_budget'
+}
+
+export function isWalletManagedSandboxPaymentMethod(
+  paymentMethod: SandboxPaymentMethod,
+) {
+  return paymentMethod !== 'x402'
+}
 
 export type CreateSandboxInput = {
   repoUrl: string
   branch?: string
   agentPresetId: OpenCodeAgentPresetId
+  agentProvider?: string
+  agentModel?: string
   initialPrompt?: string
+  paymentMethod?: SandboxPaymentMethod
 }
 
 export function normalizeSandboxInput(input: CreateSandboxInput) {
   const repoUrl = input.repoUrl.trim()
   const branch = input.branch?.trim() || undefined
   const preset = getOpenCodeAgentPreset(input.agentPresetId)
+  const modelOption = resolveOpenCodeModelOption({
+    provider: input.agentProvider,
+    model: input.agentModel,
+    fallbackProvider: preset.provider,
+    fallbackModel: preset.model,
+  })
   const initialPrompt = input.initialPrompt?.trim() || preset.starterPrompt
 
   if (!repoUrl) {
@@ -53,18 +85,23 @@ export function normalizeSandboxInput(input: CreateSandboxInput) {
     repoUrl: parsedUrl.toString(),
     branch,
     repoName,
-    repoProvider: isGitHubRepo(parsedUrl) ? ('github' as const) : ('git' as const),
+    repoProvider: isGitHubRepo(parsedUrl)
+      ? ('github' as const)
+      : ('git' as const),
     agentPresetId: preset.id,
     agentLabel: preset.label,
-    agentProvider: preset.provider,
-    agentModel: preset.model,
+    agentProvider: modelOption.provider,
+    agentModel: modelOption.model,
     initialPrompt,
   }
 }
 
 export function isGitHubRepo(repoUrl: string | URL) {
   const parsedUrl = typeof repoUrl === 'string' ? new URL(repoUrl) : repoUrl
-  return parsedUrl.hostname === 'github.com' || parsedUrl.hostname === 'www.github.com'
+  return (
+    parsedUrl.hostname === 'github.com' ||
+    parsedUrl.hostname === 'www.github.com'
+  )
 }
 
 export function getWorkspacePath(repoName: string) {

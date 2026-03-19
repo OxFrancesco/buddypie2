@@ -1,202 +1,61 @@
 import { ConvexError } from 'convex/values'
 import type { Doc, Id } from '../_generated/dataModel'
 import type { MutationCtx, QueryCtx } from '../_generated/server'
-
-export const BILLING_CURRENCY = 'USD' as const
-export const BILLING_ASSET = 'USDC' as const
-export const BILLING_NETWORK = 'base-sepolia' as const
-export const BILLING_ENVIRONMENT = 'prod' as const
-export const BILLING_PRICE_VERSION = 'buddy_x402_2026_03_16_v1'
-
-export const reserveLeasePurposeValues = [
-  'sandbox_launch',
-  'preview_boot',
-  'ssh_access',
-  'web_terminal',
-  'generic',
-] as const
-
-export const usageEventTypeValues = [
-  'sandbox_launch',
-  'preview_boot',
-  'ssh_access',
-  'web_terminal',
-] as const
-
-export type ReserveLeasePurpose = (typeof reserveLeasePurposeValues)[number]
-export type UsageEventType = (typeof usageEventTypeValues)[number]
+import {
+  BILLING_CURRENCY,
+  BILLING_PRICE_VERSION,
+  type BillingEventType,
+  type DelegatedBudgetInterval,
+  type DelegatedBudgetStatus,
+  type BillingPaymentRail,
+  type ClerkSubscriptionStatus,
+  formatUsdCents,
+  getDelegatedBudgetEnvironmentConfig,
+  getBillingEnvironmentConfig,
+  getBillingEventPriceUsdCents,
+  getClerkPlanCreditGrantUsdCents,
+} from './billingConfig'
 
 type BillingCtx = QueryCtx | MutationCtx
 
-const DEFAULT_LOW_BALANCE_THRESHOLD_USD_CENTS = 300
-
-const launchCostByPreset: Record<string, number> = {
-  'general-engineer': 250,
-  'frontend-builder': 275,
-  'docs-writer': 200,
+type LegacyWalletSnapshot = {
+  availableUsdCents: number
+  heldUsdCents: number
+  lifetimeCreditedUsdCents: number
+  lifetimeSpentUsdCents: number
+  fundingAsset: 'USDC'
+  fundingNetwork: 'base-sepolia' | 'base-mainnet'
 }
 
-const fixedEventCostsUsdCents: Record<Exclude<UsageEventType, 'sandbox_launch'>, number> =
-  {
-    preview_boot: 35,
-    ssh_access: 15,
-    web_terminal: 15,
-  }
-
-function formatUsdCents(amountUsdCents: number) {
-  return `$${(amountUsdCents / 100).toFixed(2)}`
+type ClerkSnapshotInput = {
+  clerkUserId: string
+  clerkSubscriptionId: string
+  clerkSubscriptionItemId?: string
+  status: ClerkSubscriptionStatus
+  planSlug?: string
+  planName?: string
+  planPeriod?: 'month' | 'annual'
+  periodStart?: number
+  periodEnd?: number
+  rawJson?: string
 }
 
-export function getDefaultLowBalanceThresholdUsdCents() {
-  return DEFAULT_LOW_BALANCE_THRESHOLD_USD_CENTS
+type DelegatedBudgetSummary = {
+  status: DelegatedBudgetStatus
+  type: 'fixed' | 'periodic'
+  interval: DelegatedBudgetInterval | null
+  token: 'USDC'
+  network: 'base-sepolia' | 'base-mainnet'
+  configuredAmountUsdCents: number
+  remainingAmountUsdCents: number
+  periodEndsAt: number | null
+  delegatorSmartAccount: string
+  delegateAddress: string
+  lastSettlementAt: number | null
+  lastRevokedAt: number | null
 }
 
-export function getUsageEventCostUsdCents(
-  agentPresetId: string,
-  eventType: UsageEventType,
-) {
-  if (eventType === 'sandbox_launch') {
-    return launchCostByPreset[agentPresetId] ?? launchCostByPreset['general-engineer']
-  }
-
-  return fixedEventCostsUsdCents[eventType]
-}
-
-export async function getBillingAccount(
-  ctx: BillingCtx,
-  userId: Id<'users'>,
-): Promise<Doc<'billingAccounts'> | null> {
-  return await ctx.db
-    .query('billingAccounts')
-    .withIndex('by_user_and_currency', (q) =>
-      q.eq('userId', userId).eq('currency', BILLING_CURRENCY),
-    )
-    .unique()
-}
-
-export async function getOrCreateBillingAccount(
-  ctx: MutationCtx,
-  userId: Id<'users'>,
-): Promise<Doc<'billingAccounts'>> {
-  const existing = await getBillingAccount(ctx, userId)
-
-  if (existing) {
-    return existing
-  }
-
-  const now = Date.now()
-  const accountId = await ctx.db.insert('billingAccounts', {
-    userId,
-    currency: BILLING_CURRENCY,
-    fundingAsset: BILLING_ASSET,
-    fundingNetwork: BILLING_NETWORK,
-    fundedUsdCents: 0,
-    unallocatedUsdCents: 0,
-    createdAt: now,
-    updatedAt: now,
-  })
-  const created = await ctx.db.get(accountId)
-
-  if (!created) {
-    throw new ConvexError('Failed to create the billing account.')
-  }
-
-  return created
-}
-
-export async function getAgentReserve(
-  ctx: BillingCtx,
-  userId: Id<'users'>,
-  agentPresetId: string,
-): Promise<Doc<'agentReserves'> | null> {
-  return await ctx.db
-    .query('agentReserves')
-    .withIndex('by_user_and_agent_preset_id', (q) =>
-      q.eq('userId', userId).eq('agentPresetId', agentPresetId),
-    )
-    .unique()
-}
-
-export async function getOrCreateAgentReserve(
-  ctx: MutationCtx,
-  args: {
-    userId: Id<'users'>
-    accountId: Id<'billingAccounts'>
-    agentPresetId: string
-    lowBalanceThresholdUsdCents?: number
-  },
-): Promise<Doc<'agentReserves'>> {
-  const existing = await getAgentReserve(ctx, args.userId, args.agentPresetId)
-
-  if (existing) {
-    return existing
-  }
-
-  const now = Date.now()
-  const reserveId = await ctx.db.insert('agentReserves', {
-    userId: args.userId,
-    accountId: args.accountId,
-    agentPresetId: args.agentPresetId,
-    currency: BILLING_CURRENCY,
-    environment: BILLING_ENVIRONMENT,
-    allocatedUsdCents: 0,
-    availableUsdCents: 0,
-    heldUsdCents: 0,
-    spentUsdCentsLifetime: 0,
-    lowBalanceThresholdUsdCents:
-      args.lowBalanceThresholdUsdCents ?? DEFAULT_LOW_BALANCE_THRESHOLD_USD_CENTS,
-    status: 'active',
-    version: 0,
-    createdAt: now,
-    updatedAt: now,
-  })
-  const created = await ctx.db.get(reserveId)
-
-  if (!created) {
-    throw new ConvexError('Failed to create the agent reserve.')
-  }
-
-  return created
-}
-
-async function insertLedgerEntry(
-  ctx: MutationCtx,
-  entry: {
-    userId: Id<'users'>
-    accountId: Id<'billingAccounts'>
-    agentReserveId?: Id<'agentReserves'>
-    sandboxId?: Id<'sandboxes'>
-    leaseId?: Id<'reserveLeases'>
-    usageEventId?: Id<'usageEvents'>
-    referenceType: 'funding' | 'allocation' | 'lease_hold' | 'lease_release' | 'usage_debit'
-    direction: 'debit' | 'credit'
-    bucket:
-      | 'funding_unallocated'
-      | 'reserve_available'
-      | 'reserve_held'
-      | 'revenue'
-    amountUsdCents: number
-    description: string
-    createdAt?: number
-  },
-) {
-  await ctx.db.insert('ledgerEntries', {
-    userId: entry.userId,
-    accountId: entry.accountId,
-    ...(entry.agentReserveId ? { agentReserveId: entry.agentReserveId } : {}),
-    ...(entry.sandboxId ? { sandboxId: entry.sandboxId } : {}),
-    ...(entry.leaseId ? { leaseId: entry.leaseId } : {}),
-    ...(entry.usageEventId ? { usageEventId: entry.usageEventId } : {}),
-    referenceType: entry.referenceType,
-    direction: entry.direction,
-    bucket: entry.bucket,
-    amountUsdCents: entry.amountUsdCents,
-    description: entry.description,
-    createdAt: entry.createdAt ?? Date.now(),
-  })
-}
-
-function requirePositiveAmount(amountUsdCents: number, label: string) {
+function requirePositiveWholeCents(amountUsdCents: number, label: string) {
   if (!Number.isInteger(amountUsdCents) || amountUsdCents <= 0) {
     throw new ConvexError(`${label} must be a whole number of cents greater than zero.`)
   }
@@ -208,504 +67,1268 @@ function requireNonEmptyText(value: string, label: string) {
   }
 }
 
-function requireActiveReserve(reserve: Doc<'agentReserves'>) {
-  if (reserve.status !== 'active') {
-    throw new ConvexError('This agent reserve is not active.')
+function buildInsufficientWalletMessage(requiredUsdCents: number) {
+  return `Your shared credit wallet needs at least ${formatUsdCents(requiredUsdCents)} available before this action can continue.`
+}
+
+function buildMissingDelegatedBudgetMessage() {
+  return 'Set up an active MetaMask delegated budget before using this payment rail.'
+}
+
+function mapDelegatedBudgetDocToSummary(
+  budget: Doc<'delegatedBudgets'>,
+): DelegatedBudgetSummary {
+  return {
+    status: budget.status,
+    type: budget.budgetType,
+    interval: budget.interval ?? null,
+    token: budget.token,
+    network: budget.network,
+    configuredAmountUsdCents: budget.configuredAmountUsdCents,
+    remainingAmountUsdCents: budget.remainingAmountUsdCents,
+    periodEndsAt: budget.periodEndsAt ?? null,
+    delegatorSmartAccount: budget.delegatorSmartAccount,
+    delegateAddress: budget.delegateAddress,
+    lastSettlementAt: budget.lastSettlementAt ?? null,
+    lastRevokedAt: budget.lastRevokedAt ?? null,
   }
 }
 
-function buildReserveExhaustedMessage(agentPresetId: string, requiredUsdCents: number) {
-  return `The ${agentPresetId} reserve needs at least ${formatUsdCents(requiredUsdCents)} available before it can continue. Top up funding first, then refill this agent reserve.`
+async function insertLedgerEntry(
+  ctx: MutationCtx,
+  entry: {
+    userId: Id<'users'>
+    accountId: Id<'creditAccounts'>
+    sandboxId?: Id<'sandboxes'>
+    holdId?: Id<'creditHolds'>
+    chargeId?: Id<'billingCharges'>
+    paymentRail: BillingPaymentRail
+    referenceType:
+      | 'migration_opening'
+      | 'subscription_grant'
+      | 'manual_grant'
+      | 'hold_created'
+      | 'hold_released'
+      | 'hold_captured'
+      | 'x402_charge'
+      | 'delegated_budget_charge'
+    amountUsdCents: number
+    balanceDeltaAvailableUsdCents: number
+    balanceDeltaHeldUsdCents: number
+    description: string
+    createdAt?: number
+  },
+) {
+  await ctx.db.insert('creditLedgerEntries', {
+    userId: entry.userId,
+    accountId: entry.accountId,
+    ...(entry.sandboxId ? { sandboxId: entry.sandboxId } : {}),
+    ...(entry.holdId ? { holdId: entry.holdId } : {}),
+    ...(entry.chargeId ? { chargeId: entry.chargeId } : {}),
+    paymentRail: entry.paymentRail,
+    referenceType: entry.referenceType,
+    amountUsdCents: entry.amountUsdCents,
+    balanceDeltaAvailableUsdCents: entry.balanceDeltaAvailableUsdCents,
+    balanceDeltaHeldUsdCents: entry.balanceDeltaHeldUsdCents,
+    description: entry.description,
+    createdAt: entry.createdAt ?? Date.now(),
+  })
 }
 
-async function patchSandboxSpend(
+async function patchSandboxBilling(
   ctx: MutationCtx,
-  sandboxId: Id<'sandboxes'> | undefined,
-  additionalUsdCents: number,
-  now: number,
+  args: {
+    sandboxId?: Id<'sandboxes'>
+    accountId?: Id<'creditAccounts'>
+    chargeId?: Id<'billingCharges'>
+    additionalUsdCents: number
+    now: number
+  },
 ) {
-  if (!sandboxId || additionalUsdCents <= 0) {
+  if (!args.sandboxId || args.additionalUsdCents <= 0) {
     return
   }
 
-  const sandbox = await ctx.db.get(sandboxId)
+  const sandbox = await ctx.db.get(args.sandboxId)
 
   if (!sandbox) {
     return
   }
 
-  await ctx.db.patch(sandboxId, {
-    billedUsdCents: (sandbox.billedUsdCents ?? 0) + additionalUsdCents,
-    lastBilledAt: now,
-    updatedAt: now,
+  await ctx.db.patch(args.sandboxId, {
+    ...(args.accountId ? { billingAccountId: args.accountId } : {}),
+    ...(args.chargeId ? { lastChargeId: args.chargeId } : {}),
+    billedUsdCents: (sandbox.billedUsdCents ?? 0) + args.additionalUsdCents,
+    lastBilledAt: args.now,
+    updatedAt: args.now,
   })
 }
 
-export async function creditFundingTopup(
-  ctx: MutationCtx,
-  args: {
-    userId: Id<'users'>
-    amountUsdCents: number
-    paymentReference: string
-    idempotencyKey: string
-    source: 'manual_testnet' | 'x402_settled'
-    grossTokenAmount?: string
-    metadataJson?: string
-  },
-) {
-  requirePositiveAmount(args.amountUsdCents, 'Funding amount')
-  requireNonEmptyText(args.paymentReference, 'Payment reference')
-  requireNonEmptyText(args.idempotencyKey, 'Idempotency key')
+export async function getCreditAccount(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+): Promise<Doc<'creditAccounts'> | null> {
+  const environmentConfig = getBillingEnvironmentConfig()
 
-  const existingTransaction = await ctx.db
-    .query('fundingTransactions')
-    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
-    .unique()
-
-  if (existingTransaction) {
-    if (existingTransaction.userId !== args.userId) {
-      throw new ConvexError(
-        'This idempotency key already belongs to another account.',
-      )
-    }
-
-    if (
-      existingTransaction.grossUsdCents !== args.amountUsdCents ||
-      existingTransaction.paymentReference !== args.paymentReference ||
-      existingTransaction.source !== args.source
-    ) {
-      throw new ConvexError(
-        'This idempotency key was already used with different payment details.',
-      )
-    }
-
-    const existingAccount = await ctx.db.get(existingTransaction.accountId)
-
-    if (!existingAccount) {
-      throw new ConvexError('Funding transaction exists but its account is missing.')
-    }
-
-    return existingAccount
-  }
-
-  const account = await getOrCreateBillingAccount(ctx, args.userId)
-  const now = Date.now()
-
-  await ctx.db.patch(account._id, {
-    fundedUsdCents: account.fundedUsdCents + args.amountUsdCents,
-    unallocatedUsdCents: account.unallocatedUsdCents + args.amountUsdCents,
-    updatedAt: now,
-  })
-
-  await ctx.db.insert('fundingTransactions', {
-    userId: args.userId,
-    accountId: account._id,
-    source: args.source,
-    status: 'settled',
-    paymentReference: args.paymentReference,
-    idempotencyKey: args.idempotencyKey,
-    network: BILLING_NETWORK,
-    asset: BILLING_ASSET,
-    grossUsdCents: args.amountUsdCents,
-    ...(args.grossTokenAmount ? { grossTokenAmount: args.grossTokenAmount } : {}),
-    ...(args.metadataJson ? { metadataJson: args.metadataJson } : {}),
-    createdAt: now,
-    settledAt: now,
-  })
-
-  await insertLedgerEntry(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    referenceType: 'funding',
-    direction: 'credit',
-    bucket: 'funding_unallocated',
-    amountUsdCents: args.amountUsdCents,
-    description: `Funding top-up ${args.paymentReference}`,
-    createdAt: now,
-  })
-
-  const updatedAccount = await ctx.db.get(account._id)
-
-  if (!updatedAccount) {
-    throw new ConvexError('Funding top-up was saved but the account could not be reloaded.')
-  }
-
-  return updatedAccount
-}
-
-export async function allocateFundingToReserve(
-  ctx: MutationCtx,
-  args: {
-    userId: Id<'users'>
-    agentPresetId: string
-    amountUsdCents: number
-    lowBalanceThresholdUsdCents?: number
-  },
-) {
-  requirePositiveAmount(args.amountUsdCents, 'Allocation amount')
-
-  const account = await getOrCreateBillingAccount(ctx, args.userId)
-
-  if (account.unallocatedUsdCents < args.amountUsdCents) {
-    throw new ConvexError(
-      `Your unallocated funding balance is only ${formatUsdCents(account.unallocatedUsdCents)}.`,
+  return await ctx.db
+    .query('creditAccounts')
+    .withIndex('by_user_and_environment', (q) =>
+      q.eq('userId', userId).eq('environment', environmentConfig.environment),
     )
-  }
-
-  const reserve = await getOrCreateAgentReserve(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    agentPresetId: args.agentPresetId,
-    lowBalanceThresholdUsdCents: args.lowBalanceThresholdUsdCents,
-  })
-  const now = Date.now()
-
-  await ctx.db.patch(account._id, {
-    unallocatedUsdCents: account.unallocatedUsdCents - args.amountUsdCents,
-    updatedAt: now,
-  })
-  await ctx.db.patch(reserve._id, {
-    allocatedUsdCents: reserve.allocatedUsdCents + args.amountUsdCents,
-    availableUsdCents: reserve.availableUsdCents + args.amountUsdCents,
-    ...(args.lowBalanceThresholdUsdCents !== undefined
-      ? { lowBalanceThresholdUsdCents: args.lowBalanceThresholdUsdCents }
-      : {}),
-    version: reserve.version + 1,
-    updatedAt: now,
-  })
-
-  await insertLedgerEntry(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    agentReserveId: reserve._id,
-    referenceType: 'allocation',
-    direction: 'debit',
-    bucket: 'funding_unallocated',
-    amountUsdCents: args.amountUsdCents,
-    description: `Allocate funding to ${args.agentPresetId}`,
-    createdAt: now,
-  })
-  await insertLedgerEntry(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    agentReserveId: reserve._id,
-    referenceType: 'allocation',
-    direction: 'credit',
-    bucket: 'reserve_available',
-    amountUsdCents: args.amountUsdCents,
-    description: `Allocate funding to ${args.agentPresetId}`,
-    createdAt: now,
-  })
-
-  const updatedReserve = await ctx.db.get(reserve._id)
-
-  if (!updatedReserve) {
-    throw new ConvexError('Agent reserve could not be reloaded after allocation.')
-  }
-
-  return updatedReserve
+    .unique()
 }
 
-export async function createReserveLease(
-  ctx: MutationCtx,
-  args: {
-    userId: Id<'users'>
-    agentPresetId: string
-    amountUsdCents: number
-    purpose: ReserveLeasePurpose
-    idempotencyKey: string
-    workerKey: string
-    sandboxId?: Id<'sandboxes'>
-    expiresInSeconds?: number
-    metadataJson?: string
-  },
-) {
-  requirePositiveAmount(args.amountUsdCents, 'Lease amount')
-
-  const existingLease = await ctx.db
+async function getLegacyWalletSnapshot(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+): Promise<LegacyWalletSnapshot> {
+  const environmentConfig = getBillingEnvironmentConfig()
+  const legacyAccount = await ctx.db
+    .query('billingAccounts')
+    .withIndex('by_user_and_currency', (q) =>
+      q.eq('userId', userId).eq('currency', BILLING_CURRENCY),
+    )
+    .unique()
+  const legacyReserves = await ctx.db
+    .query('agentReserves')
+    .withIndex('by_user_and_agent_preset_id', (q) => q.eq('userId', userId))
+    .collect()
+  const activeLegacyLeases = await ctx.db
     .query('reserveLeases')
-    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
-    .unique()
-
-  if (existingLease) {
-    return existingLease
-  }
-
-  const account = await getOrCreateBillingAccount(ctx, args.userId)
-  const reserve = await getAgentReserve(ctx, args.userId, args.agentPresetId)
-
-  if (!reserve) {
-    throw new ConvexError(buildReserveExhaustedMessage(args.agentPresetId, args.amountUsdCents))
-  }
-
-  requireActiveReserve(reserve)
-
-  if (reserve.availableUsdCents < args.amountUsdCents) {
-    throw new ConvexError(buildReserveExhaustedMessage(args.agentPresetId, args.amountUsdCents))
-  }
-
-  const now = Date.now()
-  const expiresAt = now + (args.expiresInSeconds ?? 15 * 60) * 1000
-  const leaseId = await ctx.db.insert('reserveLeases', {
-    userId: args.userId,
-    accountId: account._id,
-    agentReserveId: reserve._id,
-    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
-    workerKey: args.workerKey,
-    purpose: args.purpose,
-    amountUsdCents: args.amountUsdCents,
-    status: 'active',
-    expiresAt,
-    idempotencyKey: args.idempotencyKey,
-    ...(args.metadataJson ? { metadataJson: args.metadataJson } : {}),
-    createdAt: now,
-    updatedAt: now,
-  })
-
-  await ctx.db.patch(reserve._id, {
-    availableUsdCents: reserve.availableUsdCents - args.amountUsdCents,
-    heldUsdCents: reserve.heldUsdCents + args.amountUsdCents,
-    version: reserve.version + 1,
-    updatedAt: now,
-  })
-
-  await insertLedgerEntry(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    agentReserveId: reserve._id,
-    sandboxId: args.sandboxId,
-    leaseId,
-    referenceType: 'lease_hold',
-    direction: 'debit',
-    bucket: 'reserve_available',
-    amountUsdCents: args.amountUsdCents,
-    description: `Lease hold for ${args.purpose}`,
-    createdAt: now,
-  })
-  await insertLedgerEntry(ctx, {
-    userId: args.userId,
-    accountId: account._id,
-    agentReserveId: reserve._id,
-    sandboxId: args.sandboxId,
-    leaseId,
-    referenceType: 'lease_hold',
-    direction: 'credit',
-    bucket: 'reserve_held',
-    amountUsdCents: args.amountUsdCents,
-    description: `Lease hold for ${args.purpose}`,
-    createdAt: now,
-  })
-
-  const createdLease = await ctx.db.get(leaseId)
-
-  if (!createdLease) {
-    throw new ConvexError('Reserve lease could not be loaded after creation.')
-  }
-
-  return createdLease
-}
-
-export async function releaseReserveLease(
-  ctx: MutationCtx,
-  args: {
-    leaseId: Id<'reserveLeases'>
-    reason: string
-  },
-) {
-  const lease = await ctx.db.get(args.leaseId)
-
-  if (!lease) {
-    throw new ConvexError('Reserve lease not found.')
-  }
-
-  if (lease.status !== 'active') {
-    return lease
-  }
-
-  const reserve = await ctx.db.get(lease.agentReserveId)
-
-  if (!reserve) {
-    throw new ConvexError('Agent reserve not found for this lease.')
-  }
-
-  const now = Date.now()
-  await ctx.db.patch(reserve._id, {
-    availableUsdCents: reserve.availableUsdCents + lease.amountUsdCents,
-    heldUsdCents: reserve.heldUsdCents - lease.amountUsdCents,
-    version: reserve.version + 1,
-    updatedAt: now,
-  })
-  await ctx.db.patch(lease._id, {
-    status: 'released',
-    updatedAt: now,
-  })
-
-  await insertLedgerEntry(ctx, {
-    userId: lease.userId,
-    accountId: lease.accountId,
-    agentReserveId: lease.agentReserveId,
-    sandboxId: lease.sandboxId,
-    leaseId: lease._id,
-    referenceType: 'lease_release',
-    direction: 'debit',
-    bucket: 'reserve_held',
-    amountUsdCents: lease.amountUsdCents,
-    description: args.reason,
-    createdAt: now,
-  })
-  await insertLedgerEntry(ctx, {
-    userId: lease.userId,
-    accountId: lease.accountId,
-    agentReserveId: lease.agentReserveId,
-    sandboxId: lease.sandboxId,
-    leaseId: lease._id,
-    referenceType: 'lease_release',
-    direction: 'credit',
-    bucket: 'reserve_available',
-    amountUsdCents: lease.amountUsdCents,
-    description: args.reason,
-    createdAt: now,
-  })
-
-  const releasedLease = await ctx.db.get(lease._id)
-
-  if (!releasedLease) {
-    throw new ConvexError('Reserve lease could not be reloaded after release.')
-  }
-
-  return releasedLease
-}
-
-export async function captureReserveLeaseUsage(
-  ctx: MutationCtx,
-  args: {
-    leaseId: Id<'reserveLeases'>
-    eventType: UsageEventType
-    description: string
-    quantitySummary?: string
-    sandboxId?: Id<'sandboxes'>
-    idempotencyKey: string
-    costUsdCents?: number
-  },
-) {
-  const existingUsage = await ctx.db
-    .query('usageEvents')
-    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
-    .unique()
-
-  if (existingUsage) {
-    return existingUsage
-  }
-
-  const lease = await ctx.db.get(args.leaseId)
-
-  if (!lease) {
-    throw new ConvexError('Reserve lease not found.')
-  }
-
-  if (lease.status !== 'active') {
-    throw new ConvexError('This reserve lease is no longer active.')
-  }
-
-  const reserve = await ctx.db.get(lease.agentReserveId)
-
-  if (!reserve) {
-    throw new ConvexError('Agent reserve not found for this lease.')
-  }
-
-  const costUsdCents = args.costUsdCents ?? lease.amountUsdCents
-
-  if (costUsdCents > lease.amountUsdCents) {
-    throw new ConvexError('Lease capture exceeds the held amount.')
-  }
-
-  const releasedUsdCents = lease.amountUsdCents - costUsdCents
-  const now = Date.now()
-  const usageEventId = await ctx.db.insert('usageEvents', {
-    userId: lease.userId,
-    accountId: lease.accountId,
-    agentReserveId: lease.agentReserveId,
-    ...(args.sandboxId ?? lease.sandboxId ? { sandboxId: args.sandboxId ?? lease.sandboxId } : {}),
-    leaseId: lease._id,
-    eventType: args.eventType,
-    ...(args.quantitySummary ? { quantitySummary: args.quantitySummary } : {}),
-    description: args.description,
-    costUsdCents,
-    unitPriceVersion: BILLING_PRICE_VERSION,
-    idempotencyKey: args.idempotencyKey,
-    createdAt: now,
-  })
-
-  await ctx.db.patch(reserve._id, {
-    heldUsdCents: reserve.heldUsdCents - lease.amountUsdCents,
-    availableUsdCents: reserve.availableUsdCents + releasedUsdCents,
-    spentUsdCentsLifetime: reserve.spentUsdCentsLifetime + costUsdCents,
-    version: reserve.version + 1,
-    updatedAt: now,
-  })
-  await ctx.db.patch(lease._id, {
-    status: 'captured',
-    updatedAt: now,
-  })
-  await patchSandboxSpend(
-    ctx,
-    args.sandboxId ?? lease.sandboxId,
-    costUsdCents,
-    now,
+    .withIndex('by_user_and_status', (q) =>
+      q.eq('userId', userId).eq('status', 'active'),
+    )
+    .collect()
+  const availableFromReserves = legacyReserves.reduce(
+    (total, reserve) => total + reserve.availableUsdCents,
+    0,
+  )
+  const heldFromLeases = activeLegacyLeases.reduce(
+    (total, lease) => total + lease.amountUsdCents,
+    0,
+  )
+  const spentFromReserves = legacyReserves.reduce(
+    (total, reserve) => total + reserve.spentUsdCentsLifetime,
+    0,
+  )
+  const availableUsdCents =
+    (legacyAccount?.unallocatedUsdCents ?? 0) + availableFromReserves
+  const heldUsdCents = heldFromLeases
+  const lifetimeSpentUsdCents = spentFromReserves
+  const lifetimeCreditedUsdCents = Math.max(
+    legacyAccount?.fundedUsdCents ?? 0,
+    availableUsdCents + heldUsdCents + lifetimeSpentUsdCents,
   )
 
-  await insertLedgerEntry(ctx, {
-    userId: lease.userId,
-    accountId: lease.accountId,
-    agentReserveId: lease.agentReserveId,
-    sandboxId: args.sandboxId ?? lease.sandboxId,
-    leaseId: lease._id,
-    usageEventId,
-    referenceType: 'usage_debit',
-    direction: 'debit',
-    bucket: 'reserve_held',
-    amountUsdCents: lease.amountUsdCents,
-    description: args.description,
-    createdAt: now,
-  })
+  return {
+    availableUsdCents,
+    heldUsdCents,
+    lifetimeCreditedUsdCents,
+    lifetimeSpentUsdCents,
+    fundingAsset: 'USDC',
+    fundingNetwork: environmentConfig.fundingNetwork,
+  }
+}
 
-  if (releasedUsdCents > 0) {
+async function findFirstChargeForHold(
+  ctx: BillingCtx,
+  holdId: Id<'creditHolds'>,
+): Promise<Doc<'billingCharges'> | null> {
+  const charges = await ctx.db
+    .query('billingCharges')
+    .withIndex('by_hold_id', (q) => q.eq('holdId', holdId))
+    .take(1)
+
+  return charges[0] ?? null
+}
+
+async function migrateLegacyActiveLeases(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    accountId: Id<'creditAccounts'>
+  },
+) {
+  const activeLegacyLeases = await ctx.db
+    .query('reserveLeases')
+    .withIndex('by_user_and_status', (q) =>
+      q.eq('userId', args.userId).eq('status', 'active'),
+    )
+    .collect()
+
+  for (const lease of activeLegacyLeases) {
+    const migrationReference = `reserveLease:${lease._id}`
+    const existingHold = await ctx.db
+      .query('creditHolds')
+      .withIndex('by_migration_reference', (q) =>
+        q.eq('migrationReference', migrationReference),
+      )
+      .unique()
+
+    if (existingHold) {
+      continue
+    }
+
+    const reserve = await ctx.db.get(lease.agentReserveId)
+    const sandbox = lease.sandboxId ? await ctx.db.get(lease.sandboxId) : null
+
+    await ctx.db.insert('creditHolds', {
+      userId: args.userId,
+      accountId: args.accountId,
+      ...(lease.sandboxId ? { sandboxId: lease.sandboxId } : {}),
+      agentPresetId:
+        sandbox?.agentPresetId ?? reserve?.agentPresetId ?? 'general-engineer',
+      purpose: lease.purpose,
+      amountUsdCents: lease.amountUsdCents,
+      sourcePaymentRail: 'migration',
+      status: 'active',
+      expiresAt: lease.expiresAt,
+      idempotencyKey: `migrated:${lease.idempotencyKey}`,
+      migrationReference,
+      ...(lease.metadataJson ? { quantitySummary: lease.metadataJson } : {}),
+      description: `Migrated legacy hold for ${lease.purpose}`,
+      createdAt: lease.createdAt,
+      updatedAt: lease.updatedAt,
+    })
+  }
+}
+
+export async function getOrCreateCreditAccount(
+  ctx: MutationCtx,
+  userId: Id<'users'>,
+): Promise<Doc<'creditAccounts'>> {
+  const existing = await getCreditAccount(ctx, userId)
+
+  if (existing) {
+    await migrateLegacyActiveLeases(ctx, {
+      userId,
+      accountId: existing._id,
+    })
+    return existing
+  }
+
+  const environmentConfig = getBillingEnvironmentConfig()
+  const legacySnapshot = await getLegacyWalletSnapshot(ctx, userId)
+  const now = Date.now()
+  const accountId = await ctx.db.insert('creditAccounts', {
+    userId,
+    currency: BILLING_CURRENCY,
+    environment: environmentConfig.environment,
+    fundingAsset: legacySnapshot.fundingAsset,
+    fundingNetwork: legacySnapshot.fundingNetwork,
+    availableUsdCents: legacySnapshot.availableUsdCents,
+    heldUsdCents: legacySnapshot.heldUsdCents,
+    lifetimeCreditedUsdCents: legacySnapshot.lifetimeCreditedUsdCents,
+    lifetimeSpentUsdCents: legacySnapshot.lifetimeSpentUsdCents,
+    createdAt: now,
+    updatedAt: now,
+  })
+  const account = await ctx.db.get(accountId)
+
+  if (!account) {
+    throw new ConvexError('Failed to create the shared credit wallet.')
+  }
+
+  if (
+    legacySnapshot.availableUsdCents > 0 ||
+    legacySnapshot.heldUsdCents > 0 ||
+    legacySnapshot.lifetimeCreditedUsdCents > 0
+  ) {
     await insertLedgerEntry(ctx, {
-      userId: lease.userId,
-      accountId: lease.accountId,
-      agentReserveId: lease.agentReserveId,
-      sandboxId: args.sandboxId ?? lease.sandboxId,
-      leaseId: lease._id,
-      usageEventId,
-      referenceType: 'lease_release',
-      direction: 'credit',
-      bucket: 'reserve_available',
-      amountUsdCents: releasedUsdCents,
-      description: `Unused hold released for ${args.eventType}`,
+      userId,
+      accountId,
+      paymentRail: 'migration',
+      referenceType: 'migration_opening',
+      amountUsdCents:
+        legacySnapshot.availableUsdCents + legacySnapshot.heldUsdCents,
+      balanceDeltaAvailableUsdCents: legacySnapshot.availableUsdCents,
+      balanceDeltaHeldUsdCents: legacySnapshot.heldUsdCents,
+      description: 'Migrated legacy funding and active holds into the shared wallet.',
       createdAt: now,
     })
   }
 
+  await migrateLegacyActiveLeases(ctx, {
+    userId,
+    accountId,
+  })
+
+  return account
+}
+
+export async function getWalletSnapshot(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+) {
+  const environmentConfig = getBillingEnvironmentConfig()
+  const account = await getCreditAccount(ctx, userId)
+
+  if (account) {
+    return {
+      ...(account ? { accountId: account._id } : {}),
+      currency: account.currency,
+      availableUsdCents: account.availableUsdCents,
+      heldUsdCents: account.heldUsdCents,
+      lifetimeCreditedUsdCents: account.lifetimeCreditedUsdCents,
+      lifetimeSpentUsdCents: account.lifetimeSpentUsdCents,
+      fundingAsset: account.fundingAsset,
+      fundingNetwork: account.fundingNetwork,
+      environment: account.environment,
+      chainId: environmentConfig.chainId,
+      x402Network: environmentConfig.x402Network,
+    }
+  }
+
+  const legacySnapshot = await getLegacyWalletSnapshot(ctx, userId)
+
+  return {
+    accountId: undefined,
+    currency: BILLING_CURRENCY,
+    availableUsdCents: legacySnapshot.availableUsdCents,
+    heldUsdCents: legacySnapshot.heldUsdCents,
+    lifetimeCreditedUsdCents: legacySnapshot.lifetimeCreditedUsdCents,
+    lifetimeSpentUsdCents: legacySnapshot.lifetimeSpentUsdCents,
+    fundingAsset: legacySnapshot.fundingAsset,
+    fundingNetwork: legacySnapshot.fundingNetwork,
+    environment: environmentConfig.environment,
+    chainId: environmentConfig.chainId,
+    x402Network: environmentConfig.x402Network,
+  }
+}
+
+export async function getActiveDelegatedBudget(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+) {
+  const recentBudgets = await ctx.db
+    .query('delegatedBudgets')
+    .withIndex('by_user_and_created_at', (q) => q.eq('userId', userId))
+    .order('desc')
+    .take(25)
+
+  return recentBudgets.find((budget) => budget.status === 'active') ?? null
+}
+
+export async function getDelegatedBudgetSummary(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+) {
+  const budget = await getActiveDelegatedBudget(ctx, userId)
+  return budget ? mapDelegatedBudgetDocToSummary(budget) : null
+}
+
+async function summarizeAvailableBalanceByRail(
+  ctx: BillingCtx,
+  accountId: Id<'creditAccounts'>,
+) {
+  const ledgerEntries = await ctx.db
+    .query('creditLedgerEntries')
+    .withIndex('by_account_and_created_at', (q) => q.eq('accountId', accountId))
+    .collect()
+  const balances: Record<BillingPaymentRail, number> = {
+    clerk_credit: 0,
+    x402_direct: 0,
+    metamask_delegated: 0,
+    migration: 0,
+    manual_test: 0,
+  }
+
+  for (const entry of ledgerEntries) {
+    balances[entry.paymentRail] += entry.balanceDeltaAvailableUsdCents
+  }
+
+  return balances
+}
+
+async function selectSourceRailForHold(
+  ctx: BillingCtx,
+  args: {
+    accountId: Id<'creditAccounts'>
+    amountUsdCents: number
+  },
+): Promise<'clerk_credit' | 'migration' | 'manual_test'> {
+  const balances = await summarizeAvailableBalanceByRail(ctx, args.accountId)
+  const preferredRails: Array<'clerk_credit' | 'manual_test' | 'migration'> = [
+    'clerk_credit',
+    'manual_test',
+    'migration',
+  ]
+
+  for (const rail of preferredRails) {
+    if (balances[rail] >= args.amountUsdCents) {
+      return rail
+    }
+  }
+
+  for (const rail of preferredRails) {
+    if (balances[rail] > 0) {
+      return rail
+    }
+  }
+
+  return 'migration'
+}
+
+export async function holdCredits(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    sandboxId?: Id<'sandboxes'>
+    agentPresetId: string
+    purpose: 'sandbox_launch' | 'preview_boot' | 'ssh_access' | 'web_terminal' | 'generic'
+    amountUsdCents: number
+    idempotencyKey: string
+    expiresInSeconds?: number
+    quantitySummary?: string
+    description?: string
+  },
+) {
+  requirePositiveWholeCents(args.amountUsdCents, 'Credit hold amount')
+  requireNonEmptyText(args.idempotencyKey, 'Idempotency key')
+
+  const existingHold = await ctx.db
+    .query('creditHolds')
+    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
+    .unique()
+
+  if (existingHold) {
+    return existingHold
+  }
+
+  const account = await getOrCreateCreditAccount(ctx, args.userId)
+
+  if (account.availableUsdCents < args.amountUsdCents) {
+    throw new ConvexError(buildInsufficientWalletMessage(args.amountUsdCents))
+  }
+
+  const sourcePaymentRail = await selectSourceRailForHold(ctx, {
+    accountId: account._id,
+    amountUsdCents: args.amountUsdCents,
+  })
+  const now = Date.now()
+  const holdId = await ctx.db.insert('creditHolds', {
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    agentPresetId: args.agentPresetId,
+    purpose: args.purpose,
+    amountUsdCents: args.amountUsdCents,
+    sourcePaymentRail,
+    status: 'active',
+    expiresAt: now + (args.expiresInSeconds ?? 15 * 60) * 1000,
+    idempotencyKey: args.idempotencyKey,
+    ...(args.quantitySummary ? { quantitySummary: args.quantitySummary } : {}),
+    ...(args.description ? { description: args.description } : {}),
+    createdAt: now,
+    updatedAt: now,
+  })
+
+  await ctx.db.patch(account._id, {
+    availableUsdCents: account.availableUsdCents - args.amountUsdCents,
+    heldUsdCents: account.heldUsdCents + args.amountUsdCents,
+    updatedAt: now,
+  })
+
   await insertLedgerEntry(ctx, {
-    userId: lease.userId,
-    accountId: lease.accountId,
-    agentReserveId: lease.agentReserveId,
-    sandboxId: args.sandboxId ?? lease.sandboxId,
-    leaseId: lease._id,
-    usageEventId,
-    referenceType: 'usage_debit',
-    direction: 'credit',
-    bucket: 'revenue',
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    holdId,
+    paymentRail: sourcePaymentRail,
+    referenceType: 'hold_created',
+    amountUsdCents: args.amountUsdCents,
+    balanceDeltaAvailableUsdCents: -args.amountUsdCents,
+    balanceDeltaHeldUsdCents: args.amountUsdCents,
+    description: args.description ?? `Hold credits for ${args.purpose}`,
+    createdAt: now,
+  })
+
+  const hold = await ctx.db.get(holdId)
+
+  if (!hold) {
+    throw new ConvexError('The credit hold was created but could not be reloaded.')
+  }
+
+  return hold
+}
+
+export async function releaseCreditHold(
+  ctx: MutationCtx,
+  args: {
+    holdId: Id<'creditHolds'>
+    reason: string
+  },
+) {
+  requireNonEmptyText(args.reason, 'Release reason')
+
+  const hold = await ctx.db.get(args.holdId)
+
+  if (!hold) {
+    throw new ConvexError('Credit hold not found.')
+  }
+
+  if (hold.status !== 'active') {
+    return hold
+  }
+
+  const account = await ctx.db.get(hold.accountId)
+
+  if (!account) {
+    throw new ConvexError('The shared credit wallet for this hold no longer exists.')
+  }
+
+  const now = Date.now()
+
+  await ctx.db.patch(hold._id, {
+    status: 'released',
+    description: args.reason,
+    releasedAt: now,
+    updatedAt: now,
+  })
+  await ctx.db.patch(account._id, {
+    availableUsdCents: account.availableUsdCents + hold.amountUsdCents,
+    heldUsdCents: account.heldUsdCents - hold.amountUsdCents,
+    updatedAt: now,
+  })
+
+  await insertLedgerEntry(ctx, {
+    userId: hold.userId,
+    accountId: account._id,
+    ...(hold.sandboxId ? { sandboxId: hold.sandboxId } : {}),
+    holdId: hold._id,
+    paymentRail: hold.sourcePaymentRail,
+    referenceType: 'hold_released',
+    amountUsdCents: hold.amountUsdCents,
+    balanceDeltaAvailableUsdCents: hold.amountUsdCents,
+    balanceDeltaHeldUsdCents: -hold.amountUsdCents,
+    description: args.reason,
+    createdAt: now,
+  })
+
+  const updatedHold = await ctx.db.get(hold._id)
+
+  if (!updatedHold) {
+    throw new ConvexError('The released credit hold could not be reloaded.')
+  }
+
+  return updatedHold
+}
+
+export async function captureCreditHold(
+  ctx: MutationCtx,
+  args: {
+    holdId: Id<'creditHolds'>
+    sandboxId?: Id<'sandboxes'>
+    eventType: BillingEventType
+    idempotencyKey: string
+    description: string
+    quantitySummary?: string
+    costUsdCents?: number
+  },
+) {
+  requireNonEmptyText(args.idempotencyKey, 'Idempotency key')
+  requireNonEmptyText(args.description, 'Charge description')
+
+  const existingCharge = await ctx.db
+    .query('billingCharges')
+    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
+    .unique()
+
+  if (existingCharge) {
+    return existingCharge
+  }
+
+  const hold = await ctx.db.get(args.holdId)
+
+  if (!hold) {
+    throw new ConvexError('Credit hold not found.')
+  }
+
+  const existingHoldCharge = await findFirstChargeForHold(ctx, hold._id)
+
+  if (hold.status === 'captured' && existingHoldCharge) {
+    return existingHoldCharge
+  }
+
+  if (hold.status !== 'active') {
+    throw new ConvexError('Only active holds can be captured.')
+  }
+
+  const account = await ctx.db.get(hold.accountId)
+
+  if (!account) {
+    throw new ConvexError('The shared credit wallet for this hold no longer exists.')
+  }
+
+  const costUsdCents = args.costUsdCents ?? hold.amountUsdCents
+
+  if (costUsdCents !== hold.amountUsdCents) {
+    throw new ConvexError('Hold captures must match the reserved amount exactly.')
+  }
+
+  const now = Date.now()
+  const chargeId = await ctx.db.insert('billingCharges', {
+    userId: hold.userId,
+    accountId: hold.accountId,
+    ...(args.sandboxId ?? hold.sandboxId ? { sandboxId: args.sandboxId ?? hold.sandboxId } : {}),
+    holdId: hold._id,
+    agentPresetId: hold.agentPresetId,
+    eventType: args.eventType,
+    paymentRail: hold.sourcePaymentRail,
     amountUsdCents: costUsdCents,
+    unitPriceVersion: BILLING_PRICE_VERSION,
+    ...(args.quantitySummary ?? hold.quantitySummary
+      ? { quantitySummary: args.quantitySummary ?? hold.quantitySummary }
+      : {}),
+    description: args.description,
+    idempotencyKey: args.idempotencyKey,
+    createdAt: now,
+  })
+
+  await ctx.db.patch(hold._id, {
+    status: 'captured',
+    description: args.description,
+    ...(args.quantitySummary ? { quantitySummary: args.quantitySummary } : {}),
+    capturedAt: now,
+    updatedAt: now,
+  })
+  await ctx.db.patch(account._id, {
+    heldUsdCents: account.heldUsdCents - costUsdCents,
+    lifetimeSpentUsdCents: account.lifetimeSpentUsdCents + costUsdCents,
+    updatedAt: now,
+  })
+
+  await insertLedgerEntry(ctx, {
+    userId: hold.userId,
+    accountId: account._id,
+    ...(args.sandboxId ?? hold.sandboxId
+      ? { sandboxId: args.sandboxId ?? hold.sandboxId }
+      : {}),
+    holdId: hold._id,
+    chargeId,
+    paymentRail: hold.sourcePaymentRail,
+    referenceType: 'hold_captured',
+    amountUsdCents: costUsdCents,
+    balanceDeltaAvailableUsdCents: 0,
+    balanceDeltaHeldUsdCents: -costUsdCents,
     description: args.description,
     createdAt: now,
   })
 
-  const usage = await ctx.db.get(usageEventId)
+  await patchSandboxBilling(ctx, {
+    sandboxId: args.sandboxId ?? hold.sandboxId,
+    accountId: account._id,
+    chargeId,
+    additionalUsdCents: costUsdCents,
+    now,
+  })
 
-  if (!usage) {
-    throw new ConvexError('Usage event could not be loaded after capture.')
+  const charge = await ctx.db.get(chargeId)
+
+  if (!charge) {
+    throw new ConvexError('The billing charge could not be reloaded after capture.')
   }
 
-  return usage
+  return charge
+}
+
+export async function expireActiveCreditHolds(ctx: MutationCtx) {
+  const now = Date.now()
+  const expiredHolds = await ctx.db
+    .query('creditHolds')
+    .withIndex('by_status_and_expires_at', (q) =>
+      q.eq('status', 'active').lt('expiresAt', now),
+    )
+    .take(50)
+
+  for (const hold of expiredHolds) {
+    await releaseCreditHold(ctx, {
+      holdId: hold._id,
+      reason: `Credit hold expired at ${new Date(hold.expiresAt).toISOString()}`,
+    })
+  }
+
+  return {
+    expiredHoldCount: expiredHolds.length,
+  }
+}
+
+export async function recordX402Charge(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    sandboxId?: Id<'sandboxes'>
+    agentPresetId: string
+    eventType: BillingEventType
+    amountUsdCents: number
+    idempotencyKey: string
+    description: string
+    quantitySummary?: string
+    externalReference: string
+    metadataJson?: string
+  },
+) {
+  requirePositiveWholeCents(args.amountUsdCents, 'x402 charge amount')
+  requireNonEmptyText(args.idempotencyKey, 'Idempotency key')
+  requireNonEmptyText(args.description, 'Charge description')
+  requireNonEmptyText(args.externalReference, 'External settlement reference')
+
+  const existingCharge = await ctx.db
+    .query('billingCharges')
+    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
+    .unique()
+
+  if (existingCharge) {
+    return existingCharge
+  }
+
+  const account = await getOrCreateCreditAccount(ctx, args.userId)
+  const now = Date.now()
+  const chargeId = await ctx.db.insert('billingCharges', {
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    agentPresetId: args.agentPresetId,
+    eventType: args.eventType,
+    paymentRail: 'x402_direct',
+    amountUsdCents: args.amountUsdCents,
+    unitPriceVersion: BILLING_PRICE_VERSION,
+    ...(args.quantitySummary ? { quantitySummary: args.quantitySummary } : {}),
+    description: args.description,
+    idempotencyKey: args.idempotencyKey,
+    externalReference: args.externalReference,
+    ...(args.metadataJson ? { metadataJson: args.metadataJson } : {}),
+    createdAt: now,
+  })
+
+  await insertLedgerEntry(ctx, {
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    chargeId,
+    paymentRail: 'x402_direct',
+    referenceType: 'x402_charge',
+    amountUsdCents: args.amountUsdCents,
+    balanceDeltaAvailableUsdCents: 0,
+    balanceDeltaHeldUsdCents: 0,
+    description: args.description,
+    createdAt: now,
+  })
+
+  await patchSandboxBilling(ctx, {
+    sandboxId: args.sandboxId,
+    accountId: account._id,
+    chargeId,
+    additionalUsdCents: args.amountUsdCents,
+    now,
+  })
+
+  const charge = await ctx.db.get(chargeId)
+
+  if (!charge) {
+    throw new ConvexError('The x402 charge could not be reloaded after it was recorded.')
+  }
+
+  return charge
+}
+
+export async function createDelegatedBudget(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    contractBudgetId: string
+    budgetType: 'fixed' | 'periodic'
+    interval?: DelegatedBudgetInterval
+    configuredAmountUsdCents: number
+    remainingAmountUsdCents: number
+    periodStartedAt?: number
+    periodEndsAt?: number
+    ownerAddress: string
+    delegatorSmartAccount: string
+    delegateAddress: string
+    delegationJson: string
+    delegationHash: string
+    delegationExpiresAt?: number
+    approvalMode: 'exact' | 'standing'
+    approvalTxHash: string
+    createTxHash: string
+  },
+) {
+  requirePositiveWholeCents(
+    args.configuredAmountUsdCents,
+    'Delegated budget amount',
+  )
+  requireNonEmptyText(args.contractBudgetId, 'Delegated budget ID')
+  requireNonEmptyText(args.ownerAddress, 'Budget owner address')
+  requireNonEmptyText(
+    args.delegatorSmartAccount,
+    'Delegator smart account address',
+  )
+  requireNonEmptyText(args.delegateAddress, 'Backend delegate address')
+  requireNonEmptyText(args.delegationJson, 'Delegation payload')
+  requireNonEmptyText(args.delegationHash, 'Delegation hash')
+  requireNonEmptyText(args.approvalTxHash, 'Approval transaction hash')
+  requireNonEmptyText(args.createTxHash, 'Budget creation transaction hash')
+
+  const existingBudget = await ctx.db
+    .query('delegatedBudgets')
+    .withIndex('by_contract_budget_id', (q) =>
+      q.eq('contractBudgetId', args.contractBudgetId),
+    )
+    .unique()
+
+  if (existingBudget) {
+    return existingBudget
+  }
+
+  const activeBudget = await getActiveDelegatedBudget(ctx, args.userId)
+
+  if (activeBudget) {
+    throw new ConvexError(
+      'Revoke your current delegated budget before creating a new one.',
+    )
+  }
+
+  const account = await getCreditAccount(ctx, args.userId)
+  const delegatedBudgetConfig = getDelegatedBudgetEnvironmentConfig()
+
+  if (!delegatedBudgetConfig.enabled) {
+    throw new ConvexError(
+      'Delegated budgets are not configured in this environment yet.',
+    )
+  }
+
+  const now = Date.now()
+  const budgetId = await ctx.db.insert('delegatedBudgets', {
+    userId: args.userId,
+    ...(account ? { accountId: account._id } : {}),
+    status: 'active',
+    budgetType: args.budgetType,
+    ...(args.interval ? { interval: args.interval } : {}),
+    token: 'USDC',
+    network: delegatedBudgetConfig.network,
+    configuredAmountUsdCents: args.configuredAmountUsdCents,
+    remainingAmountUsdCents: args.remainingAmountUsdCents,
+    ...(args.periodStartedAt ? { periodStartedAt: args.periodStartedAt } : {}),
+    ...(args.periodEndsAt ? { periodEndsAt: args.periodEndsAt } : {}),
+    ownerAddress: args.ownerAddress,
+    delegatorSmartAccount: args.delegatorSmartAccount,
+    delegateAddress: args.delegateAddress,
+    settlementContract: delegatedBudgetConfig.settlementContract,
+    contractBudgetId: args.contractBudgetId,
+    delegationJson: args.delegationJson,
+    delegationHash: args.delegationHash,
+    ...(args.delegationExpiresAt
+      ? { delegationExpiresAt: args.delegationExpiresAt }
+      : {}),
+    approvalMode: args.approvalMode,
+    approvalTxHash: args.approvalTxHash,
+    createTxHash: args.createTxHash,
+    createdAt: now,
+    updatedAt: now,
+  })
+  const budget = await ctx.db.get(budgetId)
+
+  if (!budget) {
+    throw new ConvexError('The delegated budget could not be reloaded.')
+  }
+
+  return budget
+}
+
+export async function revokeDelegatedBudget(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    delegatedBudgetId: Id<'delegatedBudgets'>
+    revokeTxHash: string
+    remainingAmountUsdCents: number
+    lastRevokedAt?: number
+  },
+) {
+  requireNonEmptyText(args.revokeTxHash, 'Revoke transaction hash')
+
+  const budget = await ctx.db.get(args.delegatedBudgetId)
+
+  if (!budget || budget.userId !== args.userId) {
+    throw new ConvexError('Delegated budget not found.')
+  }
+
+  const revokedAt = args.lastRevokedAt ?? Date.now()
+
+  await ctx.db.patch(budget._id, {
+    status: 'revoked',
+    remainingAmountUsdCents: args.remainingAmountUsdCents,
+    lastRevokedAt: revokedAt,
+    revokeTxHash: args.revokeTxHash,
+    updatedAt: revokedAt,
+  })
+
+  const updatedBudget = await ctx.db.get(budget._id)
+
+  if (!updatedBudget) {
+    throw new ConvexError('The delegated budget could not be reloaded.')
+  }
+
+  return updatedBudget
+}
+
+export async function refreshDelegatedBudget(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    delegatedBudgetId: Id<'delegatedBudgets'>
+    status: DelegatedBudgetStatus
+    remainingAmountUsdCents: number
+    periodStartedAt?: number
+    periodEndsAt?: number
+    lastSettlementAt?: number
+    lastRevokedAt?: number
+    lastSettlementTxHash?: string
+  },
+) {
+  const budget = await ctx.db.get(args.delegatedBudgetId)
+
+  if (!budget || budget.userId !== args.userId) {
+    throw new ConvexError('Delegated budget not found.')
+  }
+
+  await ctx.db.patch(budget._id, {
+    status: args.status,
+    remainingAmountUsdCents: args.remainingAmountUsdCents,
+    ...(args.periodStartedAt ? { periodStartedAt: args.periodStartedAt } : {}),
+    ...(args.periodEndsAt ? { periodEndsAt: args.periodEndsAt } : {}),
+    ...(args.lastSettlementAt
+      ? { lastSettlementAt: args.lastSettlementAt }
+      : {}),
+    ...(args.lastRevokedAt ? { lastRevokedAt: args.lastRevokedAt } : {}),
+    ...(args.lastSettlementTxHash
+      ? { lastSettlementTxHash: args.lastSettlementTxHash }
+      : {}),
+    updatedAt: Date.now(),
+  })
+
+  const updatedBudget = await ctx.db.get(budget._id)
+
+  if (!updatedBudget) {
+    throw new ConvexError('The delegated budget could not be refreshed.')
+  }
+
+  return updatedBudget
+}
+
+export async function recordDelegatedBudgetCharge(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    delegatedBudgetId: Id<'delegatedBudgets'>
+    sandboxId?: Id<'sandboxes'>
+    agentPresetId: string
+    eventType: BillingEventType
+    amountUsdCents: number
+    idempotencyKey: string
+    description: string
+    quantitySummary?: string
+    settlementId: string
+    txHash: string
+    remainingAmountUsdCents: number
+    periodStartedAt?: number
+    periodEndsAt?: number
+    settledAt?: number
+    metadataJson?: string
+  },
+) {
+  requirePositiveWholeCents(
+    args.amountUsdCents,
+    'Delegated budget charge amount',
+  )
+  requireNonEmptyText(args.idempotencyKey, 'Idempotency key')
+  requireNonEmptyText(args.description, 'Charge description')
+  requireNonEmptyText(args.settlementId, 'Settlement ID')
+  requireNonEmptyText(args.txHash, 'Settlement transaction hash')
+
+  const existingCharge = await ctx.db
+    .query('billingCharges')
+    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', args.idempotencyKey))
+    .unique()
+
+  if (existingCharge) {
+    return existingCharge
+  }
+
+  const budget = await ctx.db.get(args.delegatedBudgetId)
+
+  if (!budget || budget.userId !== args.userId) {
+    throw new ConvexError(buildMissingDelegatedBudgetMessage())
+  }
+
+  if (budget.status !== 'active') {
+    throw new ConvexError(buildMissingDelegatedBudgetMessage())
+  }
+
+  const account = await getOrCreateCreditAccount(ctx, args.userId)
+  const settledAt = args.settledAt ?? Date.now()
+  const chargeId = await ctx.db.insert('billingCharges', {
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    agentPresetId: args.agentPresetId,
+    eventType: args.eventType,
+    paymentRail: 'metamask_delegated',
+    amountUsdCents: args.amountUsdCents,
+    unitPriceVersion: BILLING_PRICE_VERSION,
+    ...(args.quantitySummary ? { quantitySummary: args.quantitySummary } : {}),
+    description: args.description,
+    idempotencyKey: args.idempotencyKey,
+    externalReference: args.txHash,
+    ...(args.metadataJson ? { metadataJson: args.metadataJson } : {}),
+    createdAt: settledAt,
+  })
+
+  await ctx.db.insert('delegatedBudgetSettlements', {
+    userId: args.userId,
+    delegatedBudgetId: budget._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    chargeId,
+    agentPresetId: args.agentPresetId,
+    eventType: args.eventType,
+    paymentRail: 'metamask_delegated',
+    amountUsdCents: args.amountUsdCents,
+    contractBudgetId: budget.contractBudgetId,
+    settlementId: args.settlementId,
+    txHash: args.txHash,
+    remainingAmountUsdCents: args.remainingAmountUsdCents,
+    ...(args.periodStartedAt ? { periodStartedAt: args.periodStartedAt } : {}),
+    ...(args.periodEndsAt ? { periodEndsAt: args.periodEndsAt } : {}),
+    idempotencyKey: args.idempotencyKey,
+    createdAt: settledAt,
+  })
+
+  await ctx.db.patch(budget._id, {
+    remainingAmountUsdCents: args.remainingAmountUsdCents,
+    ...(args.periodStartedAt ? { periodStartedAt: args.periodStartedAt } : {}),
+    ...(args.periodEndsAt ? { periodEndsAt: args.periodEndsAt } : {}),
+    lastSettlementAt: settledAt,
+    lastSettlementTxHash: args.txHash,
+    updatedAt: settledAt,
+  })
+
+  await insertLedgerEntry(ctx, {
+    userId: args.userId,
+    accountId: account._id,
+    ...(args.sandboxId ? { sandboxId: args.sandboxId } : {}),
+    chargeId,
+    paymentRail: 'metamask_delegated',
+    referenceType: 'delegated_budget_charge',
+    amountUsdCents: args.amountUsdCents,
+    balanceDeltaAvailableUsdCents: 0,
+    balanceDeltaHeldUsdCents: 0,
+    description: args.description,
+    createdAt: settledAt,
+  })
+
+  await patchSandboxBilling(ctx, {
+    sandboxId: args.sandboxId,
+    accountId: account._id,
+    chargeId,
+    additionalUsdCents: args.amountUsdCents,
+    now: settledAt,
+  })
+
+  const charge = await ctx.db.get(chargeId)
+
+  if (!charge) {
+    throw new ConvexError(
+      'The delegated budget charge could not be reloaded after it was recorded.',
+    )
+  }
+
+  return charge
+}
+
+async function upsertClerkSubscriptionSnapshot(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    snapshot: ClerkSnapshotInput
+  },
+) {
+  const now = Date.now()
+  const existingSnapshot = await ctx.db
+    .query('clerkSubscriptionSnapshots')
+    .withIndex('by_clerk_subscription_id', (q) =>
+      q.eq('clerkSubscriptionId', args.snapshot.clerkSubscriptionId),
+    )
+    .unique()
+
+  const snapshotFields = {
+    userId: args.userId,
+    clerkUserId: args.snapshot.clerkUserId,
+    clerkSubscriptionId: args.snapshot.clerkSubscriptionId,
+    ...(args.snapshot.clerkSubscriptionItemId
+      ? { clerkSubscriptionItemId: args.snapshot.clerkSubscriptionItemId }
+      : {}),
+    status: args.snapshot.status,
+    ...(args.snapshot.planSlug ? { planSlug: args.snapshot.planSlug } : {}),
+    ...(args.snapshot.planName ? { planName: args.snapshot.planName } : {}),
+    ...(args.snapshot.planPeriod ? { planPeriod: args.snapshot.planPeriod } : {}),
+    payerType: 'user' as const,
+    ...(args.snapshot.periodStart ? { periodStart: args.snapshot.periodStart } : {}),
+    ...(args.snapshot.periodEnd ? { periodEnd: args.snapshot.periodEnd } : {}),
+    ...(args.snapshot.rawJson ? { rawJson: args.snapshot.rawJson } : {}),
+    updatedAt: now,
+  }
+
+  if (existingSnapshot) {
+    await ctx.db.patch(existingSnapshot._id, snapshotFields)
+    const snapshot = await ctx.db.get(existingSnapshot._id)
+
+    if (!snapshot) {
+      throw new ConvexError('The Clerk subscription snapshot could not be reloaded.')
+    }
+
+    return snapshot
+  }
+
+  const snapshotId = await ctx.db.insert('clerkSubscriptionSnapshots', {
+    ...snapshotFields,
+    createdAt: now,
+  })
+  const snapshot = await ctx.db.get(snapshotId)
+
+  if (!snapshot) {
+    throw new ConvexError('The Clerk subscription snapshot could not be created.')
+  }
+
+  return snapshot
+}
+
+export async function applySubscriptionCreditGrant(
+  ctx: MutationCtx,
+  args: {
+    userId: Id<'users'>
+    snapshot: ClerkSnapshotInput
+  },
+) {
+  const snapshot = await upsertClerkSubscriptionSnapshot(ctx, args)
+  const account = await getOrCreateCreditAccount(ctx, args.userId)
+  const grantAmountUsdCents = getClerkPlanCreditGrantUsdCents({
+    planSlug: args.snapshot.planSlug,
+    planPeriod: args.snapshot.planPeriod,
+  })
+
+  if (
+    args.snapshot.status !== 'active' ||
+    !args.snapshot.clerkSubscriptionItemId ||
+    !args.snapshot.periodStart ||
+    grantAmountUsdCents <= 0
+  ) {
+    return {
+      account,
+      snapshot,
+      grantApplied: false,
+      grant: null,
+    }
+  }
+
+  const grantIdempotencyKey = [
+    args.snapshot.clerkSubscriptionItemId,
+    args.snapshot.periodStart,
+    args.snapshot.periodEnd ?? 'open',
+  ].join(':')
+  const existingGrant = await ctx.db
+    .query('subscriptionCreditGrants')
+    .withIndex('by_idempotency_key', (q) => q.eq('idempotencyKey', grantIdempotencyKey))
+    .unique()
+
+  if (existingGrant) {
+    return {
+      account,
+      snapshot,
+      grantApplied: false,
+      grant: existingGrant,
+    }
+  }
+
+  const now = Date.now()
+  const grantId = await ctx.db.insert('subscriptionCreditGrants', {
+    userId: args.userId,
+    accountId: account._id,
+    clerkSubscriptionId: args.snapshot.clerkSubscriptionId,
+    clerkSubscriptionItemId: args.snapshot.clerkSubscriptionItemId,
+    ...(args.snapshot.planSlug ? { planSlug: args.snapshot.planSlug } : {}),
+    ...(args.snapshot.planPeriod ? { planPeriod: args.snapshot.planPeriod } : {}),
+    paymentRail: 'clerk_credit',
+    amountUsdCents: grantAmountUsdCents,
+    periodStart: args.snapshot.periodStart,
+    ...(args.snapshot.periodEnd ? { periodEnd: args.snapshot.periodEnd } : {}),
+    idempotencyKey: grantIdempotencyKey,
+    snapshotId: snapshot._id,
+    createdAt: now,
+    appliedAt: now,
+  })
+
+  await ctx.db.patch(account._id, {
+    availableUsdCents: account.availableUsdCents + grantAmountUsdCents,
+    lifetimeCreditedUsdCents:
+      account.lifetimeCreditedUsdCents + grantAmountUsdCents,
+    updatedAt: now,
+  })
+
+  await insertLedgerEntry(ctx, {
+    userId: args.userId,
+    accountId: account._id,
+    paymentRail: 'clerk_credit',
+    referenceType: 'subscription_grant',
+    amountUsdCents: grantAmountUsdCents,
+    balanceDeltaAvailableUsdCents: grantAmountUsdCents,
+    balanceDeltaHeldUsdCents: 0,
+    description: `Clerk subscription credit grant for ${args.snapshot.planSlug ?? 'active plan'}`,
+    createdAt: now,
+  })
+
+  const updatedAccount = await ctx.db.get(account._id)
+  const grant = await ctx.db.get(grantId)
+
+  if (!updatedAccount || !grant) {
+    throw new ConvexError('The subscription credit grant could not be reloaded.')
+  }
+
+  return {
+    account: updatedAccount,
+    snapshot,
+    grantApplied: true,
+    grant,
+  }
+}
+
+export async function getCurrentPlanSnapshot(
+  ctx: BillingCtx,
+  userId: Id<'users'>,
+) {
+  const snapshots = await ctx.db
+    .query('clerkSubscriptionSnapshots')
+    .withIndex('by_user_and_updated_at', (q) => q.eq('userId', userId))
+    .order('desc')
+    .take(1)
+
+  return snapshots[0] ?? null
+}
+
+export async function getSandboxCharges(
+  ctx: BillingCtx,
+  sandboxId: Id<'sandboxes'>,
+) {
+  return await ctx.db
+    .query('billingCharges')
+    .withIndex('by_sandbox_and_created_at', (q) => q.eq('sandboxId', sandboxId))
+    .order('desc')
+    .take(20)
+}
+
+export function getUsageEventCostUsdCents(
+  agentPresetId: string,
+  eventType: BillingEventType,
+) {
+  return getBillingEventPriceUsdCents(agentPresetId, eventType)
 }

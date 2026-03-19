@@ -14,10 +14,35 @@ export type OpenCodeManagedMcp = {
   env?: Array<string>
 }
 
+export type OpenCodeDocsWorkspaceBootstrap = {
+  kind: 'fumadocs-docs-app'
+  sourceRepoUrl: string
+  sourceRepoBranch: string
+  sourceRepoPath: string
+  docsTemplate: 'tanstack-start'
+  preferredDocsPath: string
+  fallbackDocsPath: string
+  packageManager: 'bun'
+}
+
+export type OpenCodeWorkspaceBootstrap = OpenCodeDocsWorkspaceBootstrap
+
+type OpenCodeModelOptionDefinition = {
+  id: string
+  label: string
+  description: string
+  provider: string
+  providerLabel: string
+  model: string
+  modelLabel: string
+  requiredEnv: Array<string>
+}
+
 type OpenCodeAgentPresetDefinition = {
   id: string
   label: string
   description: string
+  defaultModelOptionId: string
   provider: string
   model: string
   requiredEnv: Array<string>
@@ -27,7 +52,55 @@ type OpenCodeAgentPresetDefinition = {
   starterPromptPlaceholder: string
   skills: Array<OpenCodeManagedSkill>
   mcp: Record<string, OpenCodeManagedMcp>
+  workspaceBootstrap?: OpenCodeWorkspaceBootstrap
 }
+
+const openCodeModelOptionMap = {
+  'openrouter-minimax-m2.7': {
+    id: 'openrouter-minimax-m2.7',
+    label: 'OpenRouter / MiniMax M2.7',
+    description:
+      'Current default model path through OpenRouter for balanced general work.',
+    provider: 'openrouter',
+    providerLabel: 'OpenRouter',
+    model: 'minimax/minimax-m2.7',
+    modelLabel: 'MiniMax M2.7',
+    requiredEnv: ['OPENROUTER_API_KEY'],
+  },
+  'venice-gpt-5.3-codex': {
+    id: 'venice-gpt-5.3-codex',
+    label: 'Venice / GPT-5.3 Codex',
+    description:
+      'Venice-built-in provider option tuned for coding and tool use.',
+    provider: 'venice',
+    providerLabel: 'Venice AI',
+    model: 'openai-gpt-53-codex',
+    modelLabel: 'GPT-5.3 Codex',
+    requiredEnv: ['VENICE_API_KEY'],
+  },
+  'venice-claude-sonnet-4.6': {
+    id: 'venice-claude-sonnet-4.6',
+    label: 'Venice / Claude Sonnet 4.6',
+    description:
+      'Venice-built-in provider option with a larger context window for broad repo analysis and writing.',
+    provider: 'venice',
+    providerLabel: 'Venice AI',
+    model: 'claude-sonnet-4-6',
+    modelLabel: 'Claude Sonnet 4.6',
+    requiredEnv: ['VENICE_API_KEY'],
+  },
+  'venice-glm-5': {
+    id: 'venice-glm-5',
+    label: 'Venice / GLM 5',
+    description:
+      'Venice-built-in provider option using GLM 5 for the docs workflow default.',
+    provider: 'venice',
+    providerLabel: 'Venice AI',
+    model: 'zai-org-glm-5',
+    modelLabel: 'GLM 5',
+    requiredEnv: ['VENICE_API_KEY'],
+  },
+} as const satisfies Record<string, OpenCodeModelOptionDefinition>
 
 const openCodePresetMap = {
   'general-engineer': {
@@ -35,9 +108,10 @@ const openCodePresetMap = {
     label: 'General Engineer',
     description:
       'Balanced repo analysis and implementation for full-stack product work.',
-    provider: 'zai',
-    model: 'glm-4.7',
-    requiredEnv: ['ZAI_API_KEY'],
+    defaultModelOptionId: 'openrouter-minimax-m2.7',
+    provider: 'openrouter',
+    model: 'minimax/minimax-m2.7',
+    requiredEnv: ['OPENROUTER_API_KEY'],
     agentPrompt:
       'Act as a pragmatic software engineer who starts with the smallest high-confidence plan, keeps changes scoped, and verifies important behavior before handing work back.',
     instructionsMd: `
@@ -122,9 +196,10 @@ Use this near the end of implementation before reporting completion back to the 
     label: 'Frontend Builder',
     description:
       'UI-focused preset for React, styling, accessibility, and polish work.',
-    provider: 'zai',
-    model: 'glm-4.7',
-    requiredEnv: ['ZAI_API_KEY'],
+    defaultModelOptionId: 'openrouter-minimax-m2.7',
+    provider: 'openrouter',
+    model: 'minimax/minimax-m2.7',
+    requiredEnv: ['OPENROUTER_API_KEY'],
     agentPrompt:
       'Act as a frontend specialist. Optimize for UI clarity, responsive behavior, accessibility, and design-system consistency while keeping implementation grounded in the existing product.',
     instructionsMd: `
@@ -210,11 +285,12 @@ Use this after implementing UI changes and before reporting the result.
     label: 'Docs Writer',
     description:
       'Documentation-focused preset for guides, READMEs, onboarding, and changelogs.',
-    provider: 'zai',
-    model: 'glm-4.7',
-    requiredEnv: ['ZAI_API_KEY'],
+    defaultModelOptionId: 'venice-glm-5',
+    provider: 'venice',
+    model: 'zai-org-glm-5',
+    requiredEnv: ['VENICE_API_KEY'],
     agentPrompt:
-      'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior.',
+      'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior. When BuddyPie prepares a Fumadocs docs app, use the product repo for project truth and the Fumadocs reference repo for framework truth.',
     instructionsMd: `
 # BuddyPie Docs Writer
 
@@ -223,14 +299,24 @@ This sandbox was launched with BuddyPie's documentation preset.
 ## Priorities
 
 - Document what the code actually does today.
+- Build a complete project docs site, not just a single README, when the task calls for broader documentation coverage.
 - Prefer short sections, clear headings, and copy-pasteable commands.
 - Explain setup, validation, and edge cases without marketing language.
 - Update adjacent examples when behavior or environment requirements change.
 
+## Workspace Setup
+
+- BuddyPie clones the product repository into the workspace root.
+- BuddyPie also clones \`https://github.com/fuma-nama/fumadocs.git\` into \`sources/fumadocs\` on branch \`main\`.
+- BuddyPie scaffolds a Fumadocs React app in \`docs/\` or \`docs-site/\` when \`docs/\` is already occupied.
+
 ## Workflow
 
 - Audit the source files first so the docs stay anchored in reality.
+- Treat the product repository as the source of truth for product behavior, APIs, environment requirements, and project-specific facts.
+- Treat \`sources/fumadocs\` as the source of truth for Fumadocs structure, conventions, and examples.
 - Identify the audience for the requested document before writing.
+- Prefer Bun commands for install, dev, and build work inside the generated docs app.
 - Keep prose direct, concrete, and easy to scan.
 - Load the BuddyPie skills below when they match the task.
 
@@ -240,9 +326,19 @@ This sandbox was launched with BuddyPie's documentation preset.
 - \`buddypie-docs-qa\` for factual verification and editorial cleanup before handoff.
 `.trim(),
     starterPrompt:
-      'Review the current repository and identify the documentation gaps that matter for this task. Then outline the document structure before writing or editing content.',
+      'Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project. Cover the docs landing page, getting started and local setup, architecture and major subsystems, environment and configuration, development workflow, deployment or operations, and any API or integration docs that the codebase supports. Outline the structure before editing, then write or update the docs app content using the prepared Fumadocs workspace.',
     starterPromptPlaceholder:
-      'Describe the guide, README, release note, or documentation change you need.',
+      'Describe the docs site, guide, README, release note, or documentation change you need.',
+    workspaceBootstrap: {
+      kind: 'fumadocs-docs-app',
+      sourceRepoUrl: 'https://github.com/fuma-nama/fumadocs.git',
+      sourceRepoBranch: 'main',
+      sourceRepoPath: 'sources/fumadocs',
+      docsTemplate: 'tanstack-start',
+      preferredDocsPath: 'docs',
+      fallbackDocsPath: 'docs-site',
+      packageManager: 'bun',
+    },
     skills: [
       {
         id: 'buddypie-docs-structure',
@@ -295,16 +391,39 @@ Use this after drafting docs and before the final handoff.
   },
 } as const satisfies Record<string, OpenCodeAgentPresetDefinition>
 
+export type OpenCodeModelOptionId = keyof typeof openCodeModelOptionMap
+export type OpenCodeModelOption = OpenCodeModelOptionDefinition & {
+  id: OpenCodeModelOptionId
+}
 export type OpenCodeAgentPresetId = keyof typeof openCodePresetMap
 export type OpenCodeAgentPreset = OpenCodeAgentPresetDefinition & {
   id: OpenCodeAgentPresetId
 }
+export const defaultOpenCodeModelOptionId: OpenCodeModelOptionId =
+  'openrouter-minimax-m2.7'
 export const defaultOpenCodeAgentPresetId: OpenCodeAgentPresetId =
   'general-engineer'
 
+export const openCodeModelOptions = Object.values(
+  openCodeModelOptionMap,
+) as Array<OpenCodeModelOption>
 export const openCodeAgentPresets = Object.values(
   openCodePresetMap,
 ) as Array<OpenCodeAgentPreset>
+
+export function isOpenCodeModelOptionId(
+  value: string,
+): value is OpenCodeModelOptionId {
+  return value in openCodeModelOptionMap
+}
+
+export function getOpenCodeModelOption(value: string): OpenCodeModelOption {
+  if (!isOpenCodeModelOptionId(value)) {
+    throw new Error('Choose a valid BuddyPie model before launching a sandbox.')
+  }
+
+  return openCodeModelOptionMap[value] as OpenCodeModelOption
+}
 
 export function isOpenCodeAgentPresetId(
   value: string,
@@ -314,7 +433,9 @@ export function isOpenCodeAgentPresetId(
 
 export function getOpenCodeAgentPreset(value: string): OpenCodeAgentPreset {
   if (!isOpenCodeAgentPresetId(value)) {
-    throw new Error('Choose a valid BuddyPie preset before launching a sandbox.')
+    throw new Error(
+      'Choose a valid BuddyPie preset before launching a sandbox.',
+    )
   }
 
   return openCodePresetMap[value] as OpenCodeAgentPreset
@@ -328,4 +449,70 @@ export function getSafeOpenCodeAgentPreset(
   }
 
   return openCodePresetMap[defaultOpenCodeAgentPresetId] as OpenCodeAgentPreset
+}
+
+export function getOpenCodeModelOptionByProviderAndModel(
+  provider?: string | null,
+  model?: string | null,
+): OpenCodeModelOption | null {
+  if (!provider || !model) {
+    return null
+  }
+
+  return (
+    openCodeModelOptions.find(
+      (option) => option.provider === provider && option.model === model,
+    ) ?? null
+  )
+}
+
+export function resolveOpenCodeModelOption(input?: {
+  provider?: string | null
+  model?: string | null
+  fallbackProvider?: string | null
+  fallbackModel?: string | null
+}): OpenCodeModelOption {
+  const provider = input?.provider?.trim()
+  const model = input?.model?.trim()
+
+  if (provider || model) {
+    if (!provider || !model) {
+      throw new Error(
+        'Choose both a model provider and model before launching a sandbox.',
+      )
+    }
+
+    const matched = getOpenCodeModelOptionByProviderAndModel(provider, model)
+
+    if (!matched) {
+      throw new Error(
+        `Choose a supported BuddyPie model. '${provider}/${model}' is not configured.`,
+      )
+    }
+
+    return matched
+  }
+
+  const fallbackMatch = getOpenCodeModelOptionByProviderAndModel(
+    input?.fallbackProvider,
+    input?.fallbackModel,
+  )
+
+  if (fallbackMatch) {
+    return fallbackMatch
+  }
+
+  return getOpenCodeModelOption(defaultOpenCodeModelOptionId)
+}
+
+export function withOpenCodeModelOption(
+  preset: OpenCodeAgentPreset,
+  option: OpenCodeModelOption,
+): OpenCodeAgentPreset {
+  return {
+    ...preset,
+    provider: option.provider,
+    model: option.model,
+    requiredEnv: [...option.requiredEnv],
+  }
 }

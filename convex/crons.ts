@@ -4,9 +4,9 @@ import { internal } from './_generated/api'
 const crons = cronJobs()
 
 crons.interval(
-  'expire stale reserve leases',
+  'expire stale credit holds',
   { minutes: 5 },
-  internal.billing.expireActiveLeases,
+  internal.billing.expireActiveHolds,
   {},
 )
 

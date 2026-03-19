@@ -12,7 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedDashboardRouteImport } from './routes/_authed/dashboard'
+import { Route as ApiBillingClerkWebhookRouteImport } from './routes/api/billing/clerk-webhook'
 import { Route as AuthedSandboxesSandboxIdRouteImport } from './routes/_authed/sandboxes/$sandboxId'
+import { Route as ApiX402SandboxesCreateRouteImport } from './routes/api/x402/sandboxes/create'
+import { Route as ApiX402SandboxesSandboxIdWebTerminalRouteImport } from './routes/api/x402/sandboxes/$sandboxId/web-terminal'
+import { Route as ApiX402SandboxesSandboxIdSshRouteImport } from './routes/api/x402/sandboxes/$sandboxId/ssh'
+import { Route as ApiX402SandboxesSandboxIdRestartRouteImport } from './routes/api/x402/sandboxes/$sandboxId/restart'
+import { Route as ApiX402SandboxesSandboxIdPreviewRouteImport } from './routes/api/x402/sandboxes/$sandboxId/preview'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -28,22 +34,68 @@ const AuthedDashboardRoute = AuthedDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AuthedRoute,
 } as any)
+const ApiBillingClerkWebhookRoute = ApiBillingClerkWebhookRouteImport.update({
+  id: '/api/billing/clerk-webhook',
+  path: '/api/billing/clerk-webhook',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthedSandboxesSandboxIdRoute =
   AuthedSandboxesSandboxIdRouteImport.update({
     id: '/sandboxes/$sandboxId',
     path: '/sandboxes/$sandboxId',
     getParentRoute: () => AuthedRoute,
   } as any)
+const ApiX402SandboxesCreateRoute = ApiX402SandboxesCreateRouteImport.update({
+  id: '/api/x402/sandboxes/create',
+  path: '/api/x402/sandboxes/create',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiX402SandboxesSandboxIdWebTerminalRoute =
+  ApiX402SandboxesSandboxIdWebTerminalRouteImport.update({
+    id: '/api/x402/sandboxes/$sandboxId/web-terminal',
+    path: '/api/x402/sandboxes/$sandboxId/web-terminal',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiX402SandboxesSandboxIdSshRoute =
+  ApiX402SandboxesSandboxIdSshRouteImport.update({
+    id: '/api/x402/sandboxes/$sandboxId/ssh',
+    path: '/api/x402/sandboxes/$sandboxId/ssh',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiX402SandboxesSandboxIdRestartRoute =
+  ApiX402SandboxesSandboxIdRestartRouteImport.update({
+    id: '/api/x402/sandboxes/$sandboxId/restart',
+    path: '/api/x402/sandboxes/$sandboxId/restart',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiX402SandboxesSandboxIdPreviewRoute =
+  ApiX402SandboxesSandboxIdPreviewRouteImport.update({
+    id: '/api/x402/sandboxes/$sandboxId/preview',
+    path: '/api/x402/sandboxes/$sandboxId/preview',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof AuthedDashboardRoute
   '/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
+  '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
+  '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
+  '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
+  '/api/x402/sandboxes/$sandboxId/ssh': typeof ApiX402SandboxesSandboxIdSshRoute
+  '/api/x402/sandboxes/$sandboxId/web-terminal': typeof ApiX402SandboxesSandboxIdWebTerminalRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof AuthedDashboardRoute
   '/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
+  '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
+  '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
+  '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
+  '/api/x402/sandboxes/$sandboxId/ssh': typeof ApiX402SandboxesSandboxIdSshRoute
+  '/api/x402/sandboxes/$sandboxId/web-terminal': typeof ApiX402SandboxesSandboxIdWebTerminalRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -51,23 +103,59 @@ export interface FileRoutesById {
   '/_authed': typeof AuthedRouteWithChildren
   '/_authed/dashboard': typeof AuthedDashboardRoute
   '/_authed/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
+  '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
+  '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
+  '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
+  '/api/x402/sandboxes/$sandboxId/ssh': typeof ApiX402SandboxesSandboxIdSshRoute
+  '/api/x402/sandboxes/$sandboxId/web-terminal': typeof ApiX402SandboxesSandboxIdWebTerminalRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/dashboard' | '/sandboxes/$sandboxId'
+  fullPaths:
+    | '/'
+    | '/dashboard'
+    | '/sandboxes/$sandboxId'
+    | '/api/billing/clerk-webhook'
+    | '/api/x402/sandboxes/create'
+    | '/api/x402/sandboxes/$sandboxId/preview'
+    | '/api/x402/sandboxes/$sandboxId/restart'
+    | '/api/x402/sandboxes/$sandboxId/ssh'
+    | '/api/x402/sandboxes/$sandboxId/web-terminal'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/dashboard' | '/sandboxes/$sandboxId'
+  to:
+    | '/'
+    | '/dashboard'
+    | '/sandboxes/$sandboxId'
+    | '/api/billing/clerk-webhook'
+    | '/api/x402/sandboxes/create'
+    | '/api/x402/sandboxes/$sandboxId/preview'
+    | '/api/x402/sandboxes/$sandboxId/restart'
+    | '/api/x402/sandboxes/$sandboxId/ssh'
+    | '/api/x402/sandboxes/$sandboxId/web-terminal'
   id:
     | '__root__'
     | '/'
     | '/_authed'
     | '/_authed/dashboard'
     | '/_authed/sandboxes/$sandboxId'
+    | '/api/billing/clerk-webhook'
+    | '/api/x402/sandboxes/create'
+    | '/api/x402/sandboxes/$sandboxId/preview'
+    | '/api/x402/sandboxes/$sandboxId/restart'
+    | '/api/x402/sandboxes/$sandboxId/ssh'
+    | '/api/x402/sandboxes/$sandboxId/web-terminal'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthedRoute: typeof AuthedRouteWithChildren
+  ApiBillingClerkWebhookRoute: typeof ApiBillingClerkWebhookRoute
+  ApiX402SandboxesCreateRoute: typeof ApiX402SandboxesCreateRoute
+  ApiX402SandboxesSandboxIdPreviewRoute: typeof ApiX402SandboxesSandboxIdPreviewRoute
+  ApiX402SandboxesSandboxIdRestartRoute: typeof ApiX402SandboxesSandboxIdRestartRoute
+  ApiX402SandboxesSandboxIdSshRoute: typeof ApiX402SandboxesSandboxIdSshRoute
+  ApiX402SandboxesSandboxIdWebTerminalRoute: typeof ApiX402SandboxesSandboxIdWebTerminalRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -93,12 +181,54 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedDashboardRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/api/billing/clerk-webhook': {
+      id: '/api/billing/clerk-webhook'
+      path: '/api/billing/clerk-webhook'
+      fullPath: '/api/billing/clerk-webhook'
+      preLoaderRoute: typeof ApiBillingClerkWebhookRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_authed/sandboxes/$sandboxId': {
       id: '/_authed/sandboxes/$sandboxId'
       path: '/sandboxes/$sandboxId'
       fullPath: '/sandboxes/$sandboxId'
       preLoaderRoute: typeof AuthedSandboxesSandboxIdRouteImport
       parentRoute: typeof AuthedRoute
+    }
+    '/api/x402/sandboxes/create': {
+      id: '/api/x402/sandboxes/create'
+      path: '/api/x402/sandboxes/create'
+      fullPath: '/api/x402/sandboxes/create'
+      preLoaderRoute: typeof ApiX402SandboxesCreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x402/sandboxes/$sandboxId/web-terminal': {
+      id: '/api/x402/sandboxes/$sandboxId/web-terminal'
+      path: '/api/x402/sandboxes/$sandboxId/web-terminal'
+      fullPath: '/api/x402/sandboxes/$sandboxId/web-terminal'
+      preLoaderRoute: typeof ApiX402SandboxesSandboxIdWebTerminalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x402/sandboxes/$sandboxId/ssh': {
+      id: '/api/x402/sandboxes/$sandboxId/ssh'
+      path: '/api/x402/sandboxes/$sandboxId/ssh'
+      fullPath: '/api/x402/sandboxes/$sandboxId/ssh'
+      preLoaderRoute: typeof ApiX402SandboxesSandboxIdSshRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x402/sandboxes/$sandboxId/restart': {
+      id: '/api/x402/sandboxes/$sandboxId/restart'
+      path: '/api/x402/sandboxes/$sandboxId/restart'
+      fullPath: '/api/x402/sandboxes/$sandboxId/restart'
+      preLoaderRoute: typeof ApiX402SandboxesSandboxIdRestartRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/x402/sandboxes/$sandboxId/preview': {
+      id: '/api/x402/sandboxes/$sandboxId/preview'
+      path: '/api/x402/sandboxes/$sandboxId/preview'
+      fullPath: '/api/x402/sandboxes/$sandboxId/preview'
+      preLoaderRoute: typeof ApiX402SandboxesSandboxIdPreviewRouteImport
+      parentRoute: typeof rootRouteImport
     }
   }
 }
@@ -119,6 +249,13 @@ const AuthedRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthedRoute: AuthedRouteWithChildren,
+  ApiBillingClerkWebhookRoute: ApiBillingClerkWebhookRoute,
+  ApiX402SandboxesCreateRoute: ApiX402SandboxesCreateRoute,
+  ApiX402SandboxesSandboxIdPreviewRoute: ApiX402SandboxesSandboxIdPreviewRoute,
+  ApiX402SandboxesSandboxIdRestartRoute: ApiX402SandboxesSandboxIdRestartRoute,
+  ApiX402SandboxesSandboxIdSshRoute: ApiX402SandboxesSandboxIdSshRoute,
+  ApiX402SandboxesSandboxIdWebTerminalRoute:
+    ApiX402SandboxesSandboxIdWebTerminalRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -4,10 +4,10 @@ import type { Doc, Id } from './_generated/dataModel'
 import type { MutationCtx } from './_generated/server'
 import { getCurrentUserRecord, requireCurrentUserRecord } from './lib/auth'
 import {
-  captureReserveLeaseUsage,
-  createReserveLease,
+  captureCreditHold as captureCreditHoldInWallet,
   getUsageEventCostUsdCents,
-  releaseReserveLease,
+  holdCredits as holdCreditsInWallet,
+  releaseCreditHold as releaseCreditHoldInWallet,
 } from './lib/billing'
 
 export const sandboxRecordValidator = v.object({
@@ -36,6 +36,16 @@ export const sandboxRecordValidator = v.object({
   errorMessage: v.optional(v.string()),
   agentReserveId: v.optional(v.id('agentReserves')),
   launchLeaseId: v.optional(v.id('reserveLeases')),
+  billingAccountId: v.optional(v.id('creditAccounts')),
+  launchHoldId: v.optional(v.id('creditHolds')),
+  pendingPaymentMethod: v.optional(
+    v.union(
+      v.literal('credits'),
+      v.literal('x402'),
+      v.literal('delegated_budget'),
+    ),
+  ),
+  lastChargeId: v.optional(v.id('billingCharges')),
   billedUsdCents: v.optional(v.number()),
   lastBilledAt: v.optional(v.number()),
   createdAt: v.number(),
@@ -107,6 +117,11 @@ export const createPending = mutation({
     agentProvider: v.string(),
     agentModel: v.string(),
     initialPrompt: v.optional(v.string()),
+    paymentMethod: v.union(
+      v.literal('credits'),
+      v.literal('x402'),
+      v.literal('delegated_budget'),
+    ),
   },
   returns: sandboxRecordValidator,
   handler: async (ctx, args) => {
@@ -122,30 +137,35 @@ export const createPending = mutation({
       agentProvider: args.agentProvider,
       agentModel: args.agentModel,
       status: 'creating',
+      pendingPaymentMethod: args.paymentMethod,
       createdAt: now,
       updatedAt: now,
       ...(args.repoBranch ? { repoBranch: args.repoBranch } : {}),
       ...(args.initialPrompt ? { initialPrompt: args.initialPrompt } : {}),
       billedUsdCents: 0,
     })
-    const launchLease = await createReserveLease(ctx, {
-      userId: user._id,
-      agentPresetId: args.agentPresetId,
-      amountUsdCents: getUsageEventCostUsdCents(
-        args.agentPresetId,
-        'sandbox_launch',
-      ),
-      purpose: 'sandbox_launch',
-      idempotencyKey: `sandbox-launch:${sandboxId}`,
-      workerKey: 'buddypie:sandbox-launch',
-      sandboxId,
-    })
 
-    await ctx.db.patch(sandboxId, {
-      agentReserveId: launchLease.agentReserveId,
-      launchLeaseId: launchLease._id,
-      updatedAt: now,
-    })
+    if (args.paymentMethod === 'credits') {
+      const launchHold = await holdCreditsInWallet(ctx, {
+        userId: user._id,
+        sandboxId,
+        agentPresetId: args.agentPresetId,
+        amountUsdCents: getUsageEventCostUsdCents(
+          args.agentPresetId,
+          'sandbox_launch',
+        ),
+        purpose: 'sandbox_launch',
+        idempotencyKey: `sandbox-launch:${sandboxId}`,
+        description: `Launch hold for ${args.repoName}`,
+        quantitySummary: args.repoBranch ?? 'default branch',
+      })
+
+      await ctx.db.patch(sandboxId, {
+        billingAccountId: launchHold.accountId,
+        launchHoldId: launchHold._id,
+        updatedAt: now,
+      })
+    }
 
     const sandbox = await ctx.db.get(sandboxId)
 
@@ -170,9 +190,9 @@ export const markReady = mutation({
   handler: async (ctx, args) => {
     const sandbox = await getOwnedSandbox(ctx, args.sandboxId)
 
-    if (sandbox.launchLeaseId) {
-      await captureReserveLeaseUsage(ctx, {
-        leaseId: sandbox.launchLeaseId,
+    if (sandbox.launchHoldId) {
+      await captureCreditHoldInWallet(ctx, {
+        holdId: sandbox.launchHoldId,
         sandboxId: sandbox._id,
         eventType: 'sandbox_launch',
         description: `OpenCode sandbox launch for ${sandbox.repoName}`,
@@ -214,9 +234,9 @@ export const markFailed = mutation({
   handler: async (ctx, args) => {
     const sandbox = await getOwnedSandbox(ctx, args.sandboxId)
 
-    if (sandbox.launchLeaseId) {
-      await releaseReserveLease(ctx, {
-        leaseId: sandbox.launchLeaseId,
+    if (sandbox.launchHoldId) {
+      await releaseCreditHoldInWallet(ctx, {
+        holdId: sandbox.launchHoldId,
         reason: `Launch failed for ${sandbox.repoName}`,
       })
     }
@@ -243,7 +263,19 @@ export const remove = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await getOwnedSandbox(ctx, args.sandboxId)
+    const sandbox = await getOwnedSandbox(ctx, args.sandboxId)
+
+    if (sandbox.launchHoldId) {
+      try {
+        await releaseCreditHoldInWallet(ctx, {
+          holdId: sandbox.launchHoldId,
+          reason: `Sandbox ${sandbox.repoName} was removed before the launch hold settled.`,
+        })
+      } catch {
+        // Best effort cleanup for orphaned holds.
+      }
+    }
+
     await ctx.db.delete(args.sandboxId)
     return null
   },

@@ -1,22 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { convexQuery } from '@convex-dev/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
 import type { ChangeEvent, FormEvent } from 'react'
-import type { GithubRepoOption } from '~/features/sandboxes/server'
+import { DelegatedBudgetManager } from '~/components/delegated-budget-manager'
+import { DeleteSandboxModal } from '~/components/delete-sandbox-modal'
+import { PaymentMethodToggle } from '~/components/payment-method-toggle'
+import { SandboxCard } from '~/components/sandbox-card'
 import { Alert, AlertDescription } from '~/components/ui/alert'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { Input } from '~/components/ui/input'
 import { Textarea } from '~/components/ui/textarea'
-import { DeleteSandboxModal } from '~/components/delete-sandbox-modal'
-import { SandboxCard } from '~/components/sandbox-card'
-import {
-  allocateAgentReserve,
-  recordManualFundingTopup,
-} from '~/features/billing/server'
+import { syncCurrentClerkBillingState } from '~/features/billing/server'
+import type { GithubRepoOption } from '~/features/sandboxes/server'
 import {
   checkGithubConnection,
   createSandbox,
@@ -25,17 +28,65 @@ import {
   listGithubRepos,
   restartSandbox,
 } from '~/features/sandboxes/server'
-import { formatUsdCents, parseUsdInputToCents } from '~/lib/billing/format'
-import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
-import { getOpenCodeAgentPreset, openCodeAgentPresets } from '~/lib/opencode/presets'
+import { formatUsdCents } from '~/lib/billing/format'
+import {
+  formatBillingPlanPeriod,
+  formatBillingPlanStatus,
+  formatSandboxPaymentMethod,
+} from '~/lib/billing/presentation'
+import { postJsonWithX402Payment } from '~/lib/billing/x402-client'
+import type {
+  OpenCodeAgentPresetId,
+  OpenCodeModelOptionId,
+} from '~/lib/opencode/presets'
+import {
+  defaultOpenCodeModelOptionId,
+  getOpenCodeAgentPreset,
+  getOpenCodeModelOption,
+  openCodeAgentPresets,
+  openCodeModelOptions,
+} from '~/lib/opencode/presets'
+import {
+  isX402SandboxPaymentMethod,
+  type SandboxPaymentMethod,
+} from '~/lib/sandboxes'
 import { cn } from '~/lib/utils'
+
+type X402SandboxActionResult = {
+  sandboxId: string
+  previewUrl?: string
+  agentPresetId: string
+}
+
+type DelegatedBudgetSummary = {
+  status?: string | null
+  type?: 'fixed' | 'periodic' | null
+  interval?: 'day' | 'week' | 'month' | null
+  token?: string | null
+  network?: string | null
+  configuredAmountUsdCents?: number | null
+  remainingAmountUsdCents?: number | null
+  periodEndsAt?: string | number | null
+  delegatorSmartAccount?: string | null
+  delegateAddress?: string | null
+  lastSettlementAt?: string | number | null
+  lastRevokedAt?: string | number | null
+}
 
 export const Route = createFileRoute('/_authed/dashboard')({
   loader: async ({ context }) => {
     await Promise.all([
       context.queryClient.ensureQueryData(convexQuery(api.user.current, {})),
       context.queryClient.ensureQueryData(convexQuery(api.sandboxes.list, {})),
-      context.queryClient.ensureQueryData(convexQuery(api.billing.dashboardSummary, {})),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.dashboardSummary, {}),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.pricingCatalog, {}),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.currentDelegatedBudget, {}),
+      ),
     ])
 
     const github = await checkGithubConnection()
@@ -52,22 +103,58 @@ function DashboardRoute() {
   const queryClient = useQueryClient()
   const { github } = Route.useLoaderData()
   const { data: user } = useSuspenseQuery(convexQuery(api.user.current, {}))
-  const { data: sandboxes } = useSuspenseQuery(convexQuery(api.sandboxes.list, {}))
+  const { data: sandboxes } = useSuspenseQuery(
+    convexQuery(api.sandboxes.list, {}),
+  )
   const { data: billingSummary } = useSuspenseQuery(
     convexQuery(api.billing.dashboardSummary, {}),
   )
+  const { data: pricingCatalog } = useSuspenseQuery(
+    convexQuery(api.billing.pricingCatalog, {}),
+  )
+  const { data: delegatedBudgetRecord } = useSuspenseQuery(
+    convexQuery(api.billing.currentDelegatedBudget, {}),
+  )
   const [agentPresetId, setAgentPresetId] =
     useState<OpenCodeAgentPresetId>('general-engineer')
+  const [agentModelOptionId, setAgentModelOptionId] =
+    useState<OpenCodeModelOptionId>(defaultOpenCodeModelOptionId)
+  const [paymentMethod, setPaymentMethod] =
+    useState<SandboxPaymentMethod>('credits')
   const [initialPrompt, setInitialPrompt] = useState('')
-  const [walletTopupAmount, setWalletTopupAmount] = useState('10.00')
-  const [reserveAmounts, setReserveAmounts] = useState<
-    Record<OpenCodeAgentPresetId, string>
-  >({
-    'general-engineer': '5.00',
-    'frontend-builder': '5.00',
-    'docs-writer': '5.00',
-  })
-  const githubReposQueryKey = ['github', 'recent-repos', user?._id ?? 'anonymous'] as const
+  const [repoUrl, setRepoUrl] = useState('')
+  const [branch, setBranch] = useState('')
+  const [formError, setFormError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [billingError, setBillingError] = useState<string | null>(null)
+  const [billingSuccess, setBillingSuccess] = useState<string | null>(null)
+  const [isCreating, setIsCreating] = useState(false)
+  const [busySandboxId, setBusySandboxId] = useState<string | null>(null)
+  const [isBillingSyncing, setIsBillingSyncing] = useState(false)
+  const [githubBranches, setGithubBranches] = useState<Array<string>>([])
+  const [githubPickerError, setGithubPickerError] = useState<string | null>(
+    null,
+  )
+  const [isLoadingGithubBranches, setIsLoadingGithubBranches] = useState(false)
+  const [selectedGithubRepoFullName, setSelectedGithubRepoFullName] = useState<
+    string | null
+  >(null)
+  const [deleteModalSandboxId, setDeleteModalSandboxId] = useState<
+    string | null
+  >(null)
+  const hasAutoSyncedBilling = useRef(false)
+  const billingSummaryView = billingSummary as typeof billingSummary & {
+    currentPlan?: { status?: string | null; period?: 'month' | 'annual' | null }
+    delegatedBudget?: DelegatedBudgetSummary
+  }
+  const currentPlan = billingSummaryView.currentPlan
+  const delegatedBudget = billingSummaryView.delegatedBudget
+  const hasActiveDelegatedBudget = delegatedBudget?.status === 'active'
+  const githubReposQueryKey = [
+    'github',
+    'recent-repos',
+    user?._id ?? 'anonymous',
+  ] as const
   const githubReposQuery = useQuery({
     queryKey: githubReposQueryKey,
     queryFn: () => listGithubRepos(),
@@ -79,34 +166,29 @@ function DashboardRoute() {
     refetchOnReconnect: false,
     retry: false,
   })
-  const [repoUrl, setRepoUrl] = useState('')
-  const [branch, setBranch] = useState('')
-  const [formError, setFormError] = useState<string | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [isCreating, setIsCreating] = useState(false)
-  const [busySandboxId, setBusySandboxId] = useState<string | null>(null)
-  const [githubBranches, setGithubBranches] = useState<Array<string>>([])
-  const [githubPickerError, setGithubPickerError] = useState<string | null>(null)
-  const [billingError, setBillingError] = useState<string | null>(null)
-  const [billingBusyTarget, setBillingBusyTarget] = useState<string | null>(null)
-  const [isLoadingGithubBranches, setIsLoadingGithubBranches] = useState(false)
-  const [selectedGithubRepoFullName, setSelectedGithubRepoFullName] = useState<
-    string | null
-  >(null)
-  const [deleteModalSandboxId, setDeleteModalSandboxId] = useState<string | null>(
-    null,
-  )
   const githubRepos = githubReposQuery.data ?? []
   const githubReposError =
-    githubReposQuery.error instanceof Error ? githubReposQuery.error.message : null
-  const isLoadingGithubRepos = githubReposQuery.isPending && githubRepos.length === 0
+    githubReposQuery.error instanceof Error
+      ? githubReposQuery.error.message
+      : null
+  const isLoadingGithubRepos =
+    githubReposQuery.isPending && githubRepos.length === 0
   const isRefreshingGithubRepos = githubReposQuery.isFetching
   const githubAlertMessage = githubPickerError ?? githubReposError
   const selectedPreset = getOpenCodeAgentPreset(agentPresetId)
-  const reserveByPreset = new Map(
-    billingSummary.reserves.map((reserve) => [reserve.agentPresetId, reserve]),
-  )
-  const selectedPresetReserve = reserveByPreset.get(agentPresetId)
+  const selectedModelOption = getOpenCodeModelOption(agentModelOptionId)
+  const selectedLaunchPriceUsdCents =
+    pricingCatalog.launchPricesUsdCentsByAgentPreset[agentPresetId] ?? 0
+
+  useEffect(() => {
+    if (hasAutoSyncedBilling.current) {
+      return
+    }
+
+    hasAutoSyncedBilling.current = true
+
+    void syncBillingState(false)
+  }, [])
 
   async function refreshDashboard() {
     await Promise.all([
@@ -119,45 +201,61 @@ function DashboardRoute() {
       queryClient.invalidateQueries({
         queryKey: convexQuery(api.billing.dashboardSummary, {}).queryKey,
       }),
+      queryClient.invalidateQueries({
+        queryKey: convexQuery(api.billing.pricingCatalog, {}).queryKey,
+      }),
     ])
   }
 
-  async function handleManualTopup() {
-    setBillingBusyTarget('wallet')
-    setBillingError(null)
+  async function navigateToSandbox(sandboxId: string) {
+    await navigate({
+      to: '/sandboxes/$sandboxId',
+      params: { sandboxId },
+    })
 
-    try {
-      await recordManualFundingTopup({
-        data: {
-          amountUsdCents: parseUsdInputToCents(walletTopupAmount),
-        },
-      })
-      await refreshDashboard()
-    } catch (error) {
-      setBillingError(error instanceof Error ? error.message : 'Top-up failed.')
-    } finally {
-      setBillingBusyTarget(null)
-    }
+    void refreshDashboard()
   }
 
-  async function handleAllocateReserve(presetId: OpenCodeAgentPresetId) {
-    setBillingBusyTarget(presetId)
-    setBillingError(null)
+  async function syncBillingState(showFeedback: boolean) {
+    setIsBillingSyncing(true)
+
+    if (showFeedback) {
+      setBillingError(null)
+      setBillingSuccess(null)
+    }
 
     try {
-      await allocateAgentReserve({
-        data: {
-          agentPresetId: presetId,
-          amountUsdCents: parseUsdInputToCents(reserveAmounts[presetId] ?? ''),
-        },
-      })
+      const result = await syncCurrentClerkBillingState()
       await refreshDashboard()
-    } catch (error) {
-      setBillingError(
-        error instanceof Error ? error.message : 'Reserve allocation failed.',
+
+      if (!showFeedback) {
+        return
+      }
+
+      if (!result.synced) {
+        setBillingSuccess(
+          result.reason === 'billing_disabled'
+            ? 'Clerk Billing is disabled in this Clerk environment.'
+            : 'No active Clerk billing subscription was found to sync.',
+        )
+        return
+      }
+
+      setBillingSuccess(
+        result.grantApplied
+          ? 'Clerk billing state refreshed and new plan credits were granted.'
+          : 'Clerk billing state refreshed.',
       )
+    } catch (error) {
+      if (showFeedback) {
+        setBillingError(
+          error instanceof Error
+            ? error.message
+            : 'Could not sync Clerk billing state.',
+        )
+      }
     } finally {
-      setBillingBusyTarget(null)
+      setIsBillingSyncing(false)
     }
   }
 
@@ -177,7 +275,9 @@ function DashboardRoute() {
     } catch (error) {
       setGithubBranches([])
       setGithubPickerError(
-        error instanceof Error ? error.message : 'Could not load GitHub branches.',
+        error instanceof Error
+          ? error.message
+          : 'Could not load GitHub branches.',
       )
     } finally {
       setIsLoadingGithubBranches(false)
@@ -204,7 +304,9 @@ function DashboardRoute() {
 
   function handleRepoUrlChange(event: ChangeEvent<HTMLInputElement>) {
     const nextRepoUrl = event.target.value
-    const matchedRepo = githubRepos.find((repo) => repo.cloneUrl === nextRepoUrl)
+    const matchedRepo = githubRepos.find(
+      (repo) => repo.cloneUrl === nextRepoUrl,
+    )
 
     setFormError(null)
     setGithubPickerError(null)
@@ -223,30 +325,46 @@ function DashboardRoute() {
     event.preventDefault()
     setFormError(null)
     setActionError(null)
+
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      setFormError(
+        'Set up an active delegated budget before using that payment rail.',
+      )
+      document.getElementById('delegated-budget')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+      return
+    }
+
     setIsCreating(true)
 
     try {
-      const result = await createSandbox({
-        data: {
-          agentPresetId,
-          initialPrompt,
-          repoUrl,
-          branch,
-        },
-      })
+      const payload = {
+        agentPresetId,
+        agentProvider: selectedModelOption.provider,
+        agentModel: selectedModelOption.model,
+        initialPrompt,
+        repoUrl,
+        branch,
+        paymentMethod,
+      }
 
-      setRepoUrl('')
-      setBranch('')
-      setInitialPrompt('')
-      setSelectedGithubRepoFullName(null)
-      setGithubBranches([])
-      await refreshDashboard()
-      await navigate({
-        to: '/sandboxes/$sandboxId',
-        params: { sandboxId: result.sandboxId },
-      })
+      const result = isX402SandboxPaymentMethod(paymentMethod)
+        ? await postJsonWithX402Payment<X402SandboxActionResult>({
+            url: '/api/x402/sandboxes/create',
+            body: payload,
+            chainId: billingSummary.wallet.chainId,
+          })
+        : await createSandbox({
+            data: payload as any,
+          })
+
+      await navigateToSandbox(result.sandboxId)
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Sandbox creation failed.')
+      setFormError(
+        error instanceof Error ? error.message : 'Sandbox creation failed.',
+      )
     } finally {
       setIsCreating(false)
     }
@@ -261,8 +379,11 @@ function DashboardRoute() {
         data: { sandboxId },
       })
       await refreshDashboard()
+      setDeleteModalSandboxId(null)
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Sandbox deletion failed.')
+      setActionError(
+        error instanceof Error ? error.message : 'Sandbox deletion failed.',
+      )
     } finally {
       setBusySandboxId(null)
     }
@@ -272,225 +393,228 @@ function DashboardRoute() {
     setBusySandboxId(sandboxId)
     setActionError(null)
 
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      setActionError(
+        'Set up an active delegated budget before using that payment rail.',
+      )
+      document.getElementById('delegated-budget')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
+      setBusySandboxId(null)
+      return
+    }
+
     try {
-      const result = await restartSandbox({
-        data: { sandboxId },
-      })
-      await refreshDashboard()
-      await navigate({
-        to: '/sandboxes/$sandboxId',
-        params: { sandboxId: result.sandboxId },
-      })
+      const result = isX402SandboxPaymentMethod(paymentMethod)
+        ? await postJsonWithX402Payment<X402SandboxActionResult>({
+            url: `/api/x402/sandboxes/${sandboxId}/restart`,
+            body: {},
+            chainId: billingSummary.wallet.chainId,
+          })
+        : await restartSandbox({
+            data: { sandboxId, paymentMethod } as any,
+          })
+
+      await navigateToSandbox(result.sandboxId)
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : 'Sandbox restart failed.')
+      setActionError(
+        error instanceof Error ? error.message : 'Sandbox restart failed.',
+      )
     } finally {
       setBusySandboxId(null)
     }
   }
-
-  const userLabel = user?.name ?? user?.email ?? 'builder'
 
   return (
     <main className="flex flex-col gap-8">
       <section>
         <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
           <CardHeader>
-            <CardTitle className="text-3xl font-black uppercase sm:text-4xl">
-              Welcome, {userLabel}.
-            </CardTitle>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <CardTitle className="text-2xl font-black uppercase sm:text-3xl">
+                  Launch Workspace
+                </CardTitle>
+                <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
+                  Choose an agent preset, a repository, and the payment rail for
+                  the launch. The same rail is used for dashboard restarts.
+                </p>
+              </div>
+              <Badge
+                variant="outline"
+                className="border-2 border-foreground font-bold uppercase tracking-widest"
+              >
+                Launch {formatUsdCents(selectedLaunchPriceUsdCents)}
+              </Badge>
+            </div>
           </CardHeader>
 
           <CardContent>
-            <div className="mb-6 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
-              <div className="border-2 border-foreground bg-muted p-4">
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Funding Wallet
-                </p>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div className="border-2 border-foreground bg-background p-3">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                      Funded
-                    </p>
-                    <p className="mt-2 text-xl font-black">
-                      {formatUsdCents(billingSummary.account.fundedUsdCents)}
-                    </p>
-                  </div>
-                  <div className="border-2 border-foreground bg-background p-3">
-                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                      Unallocated
-                    </p>
-                    <p className="mt-2 text-xl font-black">
-                      {formatUsdCents(billingSummary.account.unallocatedUsdCents)}
-                    </p>
-                  </div>
-                </div>
-                <p className="mt-3 text-xs text-muted-foreground">
-                  Reserve currency is USDC on Base Sepolia. This UI currently
-                  records settled testnet funding locally while the shared ledger
-                  and reserve model are also used by the x402 seller endpoint.
-                </p>
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                  <Input
-                    value={walletTopupAmount}
-                    onChange={(event) => setWalletTopupAmount(event.target.value)}
-                    inputMode="decimal"
-                    placeholder="10.00"
-                    className="border-2 border-foreground bg-background font-mono text-sm shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      void handleManualTopup()
-                    }}
-                    disabled={billingBusyTarget === 'wallet'}
-                    className="border-2 border-foreground bg-foreground text-sm font-black uppercase tracking-wider text-background shadow-[3px_3px_0_var(--accent)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
-                  >
-                    {billingBusyTarget === 'wallet'
-                      ? 'Funding...'
-                      : 'Record testnet top-up'}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="border-2 border-foreground bg-background p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                      Agent Reserves
-                    </p>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Each preset spends from its own allowance across many
-                      sandboxes.
-                    </p>
-                  </div>
-                  <Badge
-                    variant="outline"
-                    className="border-2 border-foreground font-bold uppercase tracking-widest"
-                  >
-                    {billingSummary.account.fundingAsset} /{' '}
-                    {billingSummary.account.fundingNetwork}
-                  </Badge>
-                </div>
-
-                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                  {openCodeAgentPresets.map((preset) => {
-                    const reserve = reserveByPreset.get(preset.id)
-                    const isLow =
-                      (reserve?.availableUsdCents ?? 0) <=
-                      (reserve?.lowBalanceThresholdUsdCents ?? 0)
-
-                    return (
-                      <div
-                        key={preset.id}
-                        className="rounded-lg border-2 border-foreground bg-muted p-3"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-black uppercase">
-                              {preset.label}
-                            </p>
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              {preset.id}
-                            </p>
-                          </div>
-                          <Badge
-                            variant={isLow ? 'secondary' : 'outline'}
-                            className="border-2 border-foreground font-bold uppercase tracking-widest"
-                          >
-                            {isLow ? 'Low' : 'Ready'}
-                          </Badge>
-                        </div>
-
-                        <div className="mt-3 grid gap-2">
-                          <div className="border-2 border-foreground bg-background p-2">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                              Available
-                            </p>
-                            <p className="mt-1 font-black">
-                              {formatUsdCents(reserve?.availableUsdCents ?? 0)}
-                            </p>
-                          </div>
-                          <div className="grid grid-cols-2 gap-2 text-xs">
-                            <div className="border-2 border-foreground bg-background p-2">
-                              <p className="font-black uppercase text-muted-foreground">
-                                Held
-                              </p>
-                              <p className="mt-1 font-bold">
-                                {formatUsdCents(reserve?.heldUsdCents ?? 0)}
-                              </p>
-                            </div>
-                            <div className="border-2 border-foreground bg-background p-2">
-                              <p className="font-black uppercase text-muted-foreground">
-                                Spent
-                              </p>
-                              <p className="mt-1 font-bold">
-                                {formatUsdCents(
-                                  reserve?.spentUsdCentsLifetime ?? 0,
-                                )}
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-3 flex flex-col gap-2">
-                          <Input
-                            value={reserveAmounts[preset.id] ?? ''}
-                            onChange={(event) =>
-                              setReserveAmounts((current) => ({
-                                ...current,
-                                [preset.id]: event.target.value,
-                              }))
-                            }
-                            inputMode="decimal"
-                            placeholder="5.00"
-                            className="border-2 border-foreground bg-background font-mono text-sm shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
-                          />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => {
-                              void handleAllocateReserve(preset.id)
-                            }}
-                            disabled={billingBusyTarget === preset.id}
-                            className="border-2 border-foreground text-xs font-black uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
-                          >
-                            {billingBusyTarget === preset.id
-                              ? 'Saving...'
-                              : 'Allocate / refill'}
-                          </Button>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
             {billingError ? (
-              <Alert variant="destructive" className="mb-4 border-2 border-foreground">
+              <Alert
+                variant="destructive"
+                className="mb-4 border-2 border-foreground"
+              >
                 <AlertDescription>{billingError}</AlertDescription>
               </Alert>
             ) : null}
 
-            <form className="flex flex-col gap-4" onSubmit={handleCreateSandbox}>
-              <div className="flex flex-col gap-3">
+            {billingSuccess ? (
+              <Alert className="mb-4 border-2 border-foreground">
+                <AlertDescription>{billingSuccess}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            {isBillingSyncing ? (
+              <p className="mb-4 text-sm text-muted-foreground">
+                Syncing billing state...
+              </p>
+            ) : null}
+
+            <div className="mb-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="border-2 border-foreground bg-muted p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                    Wallet available
+                  </p>
+                  <p className="mt-1 text-lg font-black">
+                    {formatUsdCents(billingSummary.wallet.availableUsdCents)}
+                  </p>
+                </div>
+                <div className="border-2 border-foreground bg-muted p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                    Wallet held
+                  </p>
+                  <p className="mt-1 text-lg font-black">
+                    {formatUsdCents(billingSummary.wallet.heldUsdCents)}
+                  </p>
+                </div>
+                <div className="border-2 border-foreground bg-muted p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                    Subscription
+                  </p>
+                  <p className="mt-1 text-sm font-black uppercase">
+                    {formatBillingPlanStatus(currentPlan?.status)}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {formatBillingPlanPeriod(
+                      currentPlan?.period ?? undefined,
+                    ) ?? 'No billing period'}
+                  </p>
+                </div>
+              </div>
+
+              <DelegatedBudgetManager
+                id="delegated-budget"
+                summary={delegatedBudget}
+                record={delegatedBudgetRecord}
+                environment={pricingCatalog.environment}
+                onUpdated={refreshDashboard}
+                onSelectRail={() => {
+                  setPaymentMethod('delegated_budget')
+                }}
+              />
+            </div>
+
+            <form
+              className="flex flex-col gap-4"
+              onSubmit={handleCreateSandbox}
+            >
+              <PaymentMethodToggle
+                value={paymentMethod}
+                onChange={(nextValue) => {
+                  setFormError(null)
+                  setPaymentMethod(nextValue)
+                }}
+                creditsDescription={`Spend ${formatUsdCents(selectedLaunchPriceUsdCents)} from your shared wallet.`}
+                x402Description={`Settle ${formatUsdCents(selectedLaunchPriceUsdCents)} directly on ${billingSummary.wallet.fundingNetwork}.`}
+                delegatedBudgetDescription={`Spend ${formatUsdCents(selectedLaunchPriceUsdCents)} from an active MetaMask delegated budget.`}
+              />
+
+              <div
+                role="radiogroup"
+                aria-label="OpenCode preset agent"
+                className="grid gap-3 md:grid-cols-3"
+              >
+                {openCodeAgentPresets.map((preset) => {
+                  const isSelected = preset.id === agentPresetId
+                  const presetPrice =
+                    pricingCatalog.launchPricesUsdCentsByAgentPreset[
+                      preset.id
+                    ] ?? 0
+
+                  return (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      onClick={() => {
+                        setFormError(null)
+                        setAgentPresetId(preset.id)
+                        setAgentModelOptionId(
+                          preset.defaultModelOptionId as OpenCodeModelOptionId,
+                        )
+                      }}
+                      className={cn(
+                        'flex flex-col gap-3 rounded-lg border-2 border-foreground p-4 text-left shadow-[3px_3px_0_var(--foreground)] transition-all focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+                        isSelected
+                          ? 'translate-x-[2px] translate-y-[2px] bg-accent shadow-none'
+                          : 'bg-background hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none',
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black uppercase tracking-wide">
+                            {preset.label}
+                          </p>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            {preset.description}
+                          </p>
+                        </div>
+                        <Badge
+                          variant={isSelected ? 'secondary' : 'outline'}
+                          className="border-2 border-foreground font-bold uppercase tracking-widest"
+                        >
+                          {formatUsdCents(presetPrice)}
+                        </Badge>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <div className="flex flex-col gap-1">
+                  <p className="text-[10px] font-black uppercase tracking-widest">
+                    Model Provider
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    BuddyPie stores the selected provider and model on the
+                    sandbox record in Convex and reuses them on restart.
+                    Selecting a preset applies its recommended default model,
+                    which you can override here.
+                  </p>
+                </div>
+
                 <div
                   role="radiogroup"
-                  aria-label="OpenCode preset agent"
+                  aria-label="Model provider and model"
                   className="grid gap-3 md:grid-cols-3"
                 >
-                  {openCodeAgentPresets.map((preset) => {
-                    const isSelected = preset.id === agentPresetId
+                  {openCodeModelOptions.map((option) => {
+                    const isSelected = option.id === agentModelOptionId
 
                     return (
                       <button
-                        key={preset.id}
+                        key={option.id}
                         type="button"
                         role="radio"
                         aria-checked={isSelected}
                         onClick={() => {
                           setFormError(null)
-                          setAgentPresetId(preset.id)
+                          setAgentModelOptionId(option.id)
                         }}
                         className={cn(
                           'flex flex-col gap-3 rounded-lg border-2 border-foreground p-4 text-left shadow-[3px_3px_0_var(--foreground)] transition-all focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
@@ -499,21 +623,27 @@ function DashboardRoute() {
                             : 'bg-background hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none',
                         )}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-black uppercase tracking-wide">
-                              {preset.label}
-                            </p>
-                            <p className="mt-2 text-xs text-muted-foreground">
-                              {preset.description}
-                            </p>
+                        <div className="flex flex-col gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge
+                              variant={isSelected ? 'secondary' : 'outline'}
+                              className="border-2 border-foreground font-bold uppercase tracking-widest"
+                            >
+                              {option.providerLabel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="border-2 border-foreground font-bold uppercase tracking-widest"
+                            >
+                              {option.modelLabel}
+                            </Badge>
                           </div>
-                          <Badge
-                            variant={isSelected ? 'secondary' : 'outline'}
-                            className="border-2 border-foreground font-bold uppercase tracking-widest"
-                          >
-                            {isSelected ? 'Selected' : 'Preset'}
-                          </Badge>
+                          <p className="text-xs text-muted-foreground">
+                            {option.description}
+                          </p>
+                          <p className="font-mono text-xs text-muted-foreground">
+                            {option.provider}/{option.model}
+                          </p>
                         </div>
                       </button>
                     )
@@ -532,7 +662,9 @@ function DashboardRoute() {
                   id="repo-url"
                   type="url"
                   required
-                  list={githubRepos.length > 0 ? 'github-repo-options' : undefined}
+                  list={
+                    githubRepos.length > 0 ? 'github-repo-options' : undefined
+                  }
                   value={repoUrl}
                   onChange={handleRepoUrlChange}
                   placeholder="https://github.com/owner/repo.git"
@@ -582,7 +714,11 @@ function DashboardRoute() {
                 <Input
                   id="branch"
                   type="text"
-                  list={githubBranches.length > 0 ? 'github-branch-options' : undefined}
+                  list={
+                    githubBranches.length > 0
+                      ? 'github-branch-options'
+                      : undefined
+                  }
                   value={branch}
                   onChange={(event) => {
                     setFormError(null)
@@ -596,7 +732,7 @@ function DashboardRoute() {
                     ? 'Fetching branches...'
                     : selectedGithubRepoFullName && githubBranches.length > 0
                       ? `${githubBranches.length} branch${githubBranches.length === 1 ? '' : 'es'} from ${selectedGithubRepoFullName}.`
-                      : 'Leave blank for default branch.'}
+                      : 'Leave blank for the default branch.'}
                 </p>
               </div>
 
@@ -644,13 +780,19 @@ function DashboardRoute() {
               ) : null}
 
               {githubAlertMessage ? (
-                <Alert variant="destructive" className="border-2 border-foreground">
+                <Alert
+                  variant="destructive"
+                  className="border-2 border-foreground"
+                >
                   <AlertDescription>{githubAlertMessage}</AlertDescription>
                 </Alert>
               ) : null}
 
               {formError ? (
-                <Alert variant="destructive" className="border-2 border-foreground">
+                <Alert
+                  variant="destructive"
+                  className="border-2 border-foreground"
+                >
                   <AlertDescription>{formError}</AlertDescription>
                 </Alert>
               ) : null}
@@ -661,11 +803,18 @@ function DashboardRoute() {
                   disabled={isCreating}
                   className="h-10 border-2 border-foreground bg-foreground px-6 text-sm font-black uppercase tracking-wider text-background shadow-[4px_4px_0_var(--accent)] transition-all hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
                 >
-                  {isCreating ? 'Launching...' : 'Create sandbox →'}
+                  {isCreating
+                    ? isX402SandboxPaymentMethod(paymentMethod)
+                      ? 'Waiting for wallet...'
+                      : paymentMethod === 'delegated_budget'
+                        ? 'Settling budget...'
+                        : 'Launching...'
+                    : `Create sandbox with ${formatSandboxPaymentMethod(paymentMethod)} →`}
                 </Button>
                 <p className="text-xs text-muted-foreground">
-                  {selectedPreset.label} reserve available:{' '}
-                  {formatUsdCents(selectedPresetReserve?.availableUsdCents ?? 0)}
+                  Launch cost: {formatUsdCents(selectedLaunchPriceUsdCents)}.
+                  Runtime actions on the workspace page use the same shared
+                  wallet, delegated budget, or x402 direct flow.
                 </p>
               </div>
             </form>
@@ -680,12 +829,18 @@ function DashboardRoute() {
               Workspaces
             </p>
             <h3 className="mt-1 text-2xl font-black uppercase">
-              Pie's Workspaces
+              Pie&apos;s Workspaces
             </h3>
           </div>
-          <p className="border-2 border-foreground bg-accent px-2 py-1 text-xs font-black">
-            {sandboxes.length}
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="border-2 border-foreground bg-accent px-2 py-1 text-xs font-black">
+              {sandboxes.length}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Restarts use {formatSandboxPaymentMethod(paymentMethod)} from this
+              page.
+            </p>
+          </div>
         </div>
 
         {actionError ? (
@@ -700,35 +855,40 @@ function DashboardRoute() {
           </div>
         ) : (
           <div className="grid gap-4 xl:grid-cols-2">
-            {sandboxes.map((sandbox) => (
+            {sandboxes.map((sandbox: any) => (
               <SandboxCard
                 key={sandbox._id}
                 sandbox={sandbox}
                 isBusy={busySandboxId === sandbox._id}
                 onDelete={() => setDeleteModalSandboxId(sandbox._id)}
-                onRestart={() => handleRestartSandbox(sandbox._id)}
+                onRestart={() => {
+                  void handleRestartSandbox(sandbox._id)
+                }}
               />
             ))}
           </div>
         )}
-
-        <DeleteSandboxModal
-          open={deleteModalSandboxId !== null}
-          onOpenChange={(open) => {
-            if (!open) setDeleteModalSandboxId(null)
-          }}
-          onConfirm={async () => {
-            if (deleteModalSandboxId) {
-              await handleDeleteSandbox(deleteModalSandboxId)
-            }
-          }}
-          sandboxName={
-            deleteModalSandboxId
-              ? sandboxes.find((s) => s._id === deleteModalSandboxId)?.repoName
-              : undefined
-          }
-        />
       </section>
+
+      <DeleteSandboxModal
+        open={deleteModalSandboxId !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteModalSandboxId(null)
+          }
+        }}
+        onConfirm={async () => {
+          if (!deleteModalSandboxId) {
+            return
+          }
+
+          await handleDeleteSandbox(deleteModalSandboxId)
+        }}
+        sandboxName={
+          sandboxes.find((sandbox: any) => sandbox._id === deleteModalSandboxId)
+            ?.repoName
+        }
+      />
     </main>
   )
 }

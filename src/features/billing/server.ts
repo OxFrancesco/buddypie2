@@ -1,57 +1,196 @@
 import { createServerFn } from '@tanstack/react-start'
 import { api } from 'convex/_generated/api'
-import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
+import type { Id } from 'convex/_generated/dataModel'
+import { clerkClient } from '@clerk/tanstack-react-start/server'
+import {
+  normalizeClerkSubscription,
+  type ClerkBillingSubscription,
+} from '~/features/billing/clerk-billing'
 import { getAuthenticatedConvexClient } from '~/lib/server/authenticated-convex'
 
-type FundingTopupInput = {
-  amountUsdCents: number
+function isMissingSubscriptionError(error: unknown) {
+  return (
+    error instanceof Error &&
+    /(404|not found|no .*subscription|billing subscription)/i.test(error.message)
+  )
 }
 
-type AgentReserveAllocationInput = {
-  agentPresetId: OpenCodeAgentPresetId
-  amountUsdCents: number
+function isBillingDisabledError(error: unknown) {
+  return (
+    error instanceof Error &&
+    /(billing.+disabled|disabled.+billing|billing.+not enabled|not enabled.+billing)/i.test(
+      error.message,
+    )
+  )
 }
 
-export const recordManualFundingTopup = createServerFn({ method: 'POST' })
-  .inputValidator((data: FundingTopupInput) => data)
-  .handler(async ({ data }) => {
-    const { convex, convexUrl, token } = await getAuthenticatedConvexClient()
+export const syncCurrentClerkBillingState = createServerFn({ method: 'POST' }).handler(
+  async () => {
+    const { convex, userId } = await getAuthenticatedConvexClient()
     await convex.mutation(api.user.ensureCurrentUser, {})
-    const response = await fetch(`${convexUrl}/billing/manual-topup`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        amountUsdCents: data.amountUsdCents,
-        paymentReference: `manual-testnet-${Date.now()}`,
-        idempotencyKey: `manual-topup:${Date.now()}:${data.amountUsdCents}`,
-        source: 'manual_testnet',
-        metadataJson:
-          'Settled locally for the BuddyPie reserve MVP. Replace this with the x402 seller callback.',
-      }),
-    })
 
-    if (!response.ok) {
-      const error = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | null
+    const client = await clerkClient()
+    let subscription: ClerkBillingSubscription | null = null
 
-      throw new Error(error?.error ?? 'Manual top-up failed.')
+    try {
+      subscription = (await client.billing.getUserBillingSubscription(
+        userId,
+      )) as ClerkBillingSubscription
+    } catch (error) {
+      if (isBillingDisabledError(error)) {
+        return {
+          synced: false,
+          reason: 'billing_disabled' as const,
+        }
+      }
+
+      if (isMissingSubscriptionError(error)) {
+        return {
+          synced: false,
+          reason: 'missing_subscription' as const,
+        }
+      }
+
+      throw error
     }
 
-    return await response.json()
-  })
+    const normalized = normalizeClerkSubscription(userId, subscription)
 
-export const allocateAgentReserve = createServerFn({ method: 'POST' })
-  .inputValidator((data: AgentReserveAllocationInput) => data)
+    if (!normalized) {
+      return {
+        synced: false,
+        reason: 'missing_subscription' as const,
+      }
+    }
+
+    const result = await convex.mutation(
+      api.billing.applySubscriptionCreditGrant,
+      {
+        clerkSubscriptionId: normalized.clerkSubscriptionId,
+        clerkSubscriptionItemId: normalized.clerkSubscriptionItemId,
+        status: normalized.status,
+        planSlug: normalized.planSlug,
+        planName: normalized.planName,
+        planPeriod: normalized.planPeriod,
+        periodStart: normalized.periodStart,
+        periodEnd: normalized.periodEnd,
+        rawJson: normalized.rawJson,
+      },
+    )
+
+    return {
+      synced: true,
+      reason: 'synced' as const,
+      ...result,
+    }
+  },
+)
+
+type CreateDelegatedBudgetInput = {
+  contractBudgetId: string
+  budgetType: 'fixed' | 'periodic'
+  interval?: 'day' | 'week' | 'month' | null
+  configuredAmountUsdCents: number
+  remainingAmountUsdCents: number
+  periodStartedAt?: number | null
+  periodEndsAt?: number | null
+  ownerAddress: string
+  delegatorSmartAccount: string
+  delegateAddress: string
+  delegationJson: string
+  delegationHash: string
+  delegationExpiresAt?: number | null
+  approvalMode: 'exact' | 'standing'
+  approvalTxHash: string
+  createTxHash: string
+}
+
+type SyncDelegatedBudgetInput = {
+  delegatedBudgetId: string
+  contractBudgetId: string
+  lastSettlementTxHash?: string
+}
+
+type RevokeDelegatedBudgetInput = {
+  delegatedBudgetId: string
+  contractBudgetId: string
+  revokeTxHash: string
+}
+
+export const createDelegatedBudget = createServerFn({ method: 'POST' })
+  .inputValidator((data: CreateDelegatedBudgetInput) => data)
   .handler(async ({ data }) => {
     const { convex } = await getAuthenticatedConvexClient()
     await convex.mutation(api.user.ensureCurrentUser, {})
 
-    return await convex.mutation(api.billing.allocateReserve, {
-      agentPresetId: data.agentPresetId,
-      amountUsdCents: data.amountUsdCents,
+    return await convex.mutation(api.billing.createDelegatedBudget, {
+      contractBudgetId: data.contractBudgetId,
+      budgetType: data.budgetType,
+      ...(data.interval ? { interval: data.interval } : {}),
+      configuredAmountUsdCents: data.configuredAmountUsdCents,
+      remainingAmountUsdCents: data.remainingAmountUsdCents,
+      ...(data.periodStartedAt ? { periodStartedAt: data.periodStartedAt } : {}),
+      ...(data.periodEndsAt ? { periodEndsAt: data.periodEndsAt } : {}),
+      ownerAddress: data.ownerAddress,
+      delegatorSmartAccount: data.delegatorSmartAccount,
+      delegateAddress: data.delegateAddress,
+      delegationJson: data.delegationJson,
+      delegationHash: data.delegationHash,
+      ...(data.delegationExpiresAt
+        ? { delegationExpiresAt: data.delegationExpiresAt }
+        : {}),
+      approvalMode: data.approvalMode,
+      approvalTxHash: data.approvalTxHash,
+      createTxHash: data.createTxHash,
+    })
+  })
+
+export const refreshDelegatedBudgetState = createServerFn({ method: 'POST' })
+  .inputValidator((data: SyncDelegatedBudgetInput) => data)
+  .handler(async ({ data }) => {
+    const { convex } = await getAuthenticatedConvexClient()
+    const { readDelegatedBudgetOnchain } = await import(
+      '~/lib/server/delegated-budget'
+    )
+    const onchainBudget = await readDelegatedBudgetOnchain(data.contractBudgetId)
+
+    return await convex.mutation(api.billing.refreshDelegatedBudgetState, {
+      delegatedBudgetId: data.delegatedBudgetId as Id<'delegatedBudgets'>,
+      status: onchainBudget.status,
+      remainingAmountUsdCents: onchainBudget.remainingAmountUsdCents,
+      ...(onchainBudget.periodStartedAt
+        ? { periodStartedAt: onchainBudget.periodStartedAt }
+        : {}),
+      ...(onchainBudget.periodEndsAt
+        ? { periodEndsAt: onchainBudget.periodEndsAt }
+        : {}),
+      ...(onchainBudget.lastSettlementAt
+        ? { lastSettlementAt: onchainBudget.lastSettlementAt }
+        : {}),
+      ...(onchainBudget.lastRevokedAt
+        ? { lastRevokedAt: onchainBudget.lastRevokedAt }
+        : {}),
+      ...(data.lastSettlementTxHash
+        ? { lastSettlementTxHash: data.lastSettlementTxHash }
+        : {}),
+    })
+  })
+
+export const revokeDelegatedBudget = createServerFn({ method: 'POST' })
+  .inputValidator((data: RevokeDelegatedBudgetInput) => data)
+  .handler(async ({ data }) => {
+    const { convex } = await getAuthenticatedConvexClient()
+    const { readDelegatedBudgetOnchain } = await import(
+      '~/lib/server/delegated-budget'
+    )
+    const onchainBudget = await readDelegatedBudgetOnchain(data.contractBudgetId)
+
+    return await convex.mutation(api.billing.revokeDelegatedBudget, {
+      delegatedBudgetId: data.delegatedBudgetId as Id<'delegatedBudgets'>,
+      revokeTxHash: data.revokeTxHash,
+      remainingAmountUsdCents: onchainBudget.remainingAmountUsdCents,
+      ...(onchainBudget.lastRevokedAt
+        ? { lastRevokedAt: onchainBudget.lastRevokedAt }
+        : {}),
     })
   })

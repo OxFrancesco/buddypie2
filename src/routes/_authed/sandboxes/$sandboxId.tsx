@@ -4,28 +4,88 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
+import { DelegatedBudgetManager } from '~/components/delegated-budget-manager'
 import { DeleteSandboxModal } from '~/components/delete-sandbox-modal'
+import { PaymentMethodToggle } from '~/components/payment-method-toggle'
 import { Alert, AlertDescription } from '~/components/ui/alert'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { StatusPill } from '~/components/status-pill'
-import { formatUsdCents } from '~/lib/billing/format'
-import { getSafeOpenCodeAgentPreset } from '~/lib/opencode/presets'
 import {
   createTerminalAccess,
   deleteSandbox,
+  ensureAppPreviewServer,
+  getAppPreviewCommandSuggestion,
   getAppPreviewLogs,
   getPortPreview,
-  ensureAppPreviewServer,
   restartSandbox,
 } from '~/features/sandboxes/server'
+import { formatSandboxPaymentMethod } from '~/lib/billing/presentation'
+import { postJsonWithX402Payment } from '~/lib/billing/x402-client'
+import {
+  getOpenCodeModelOptionByProviderAndModel,
+  getSafeOpenCodeAgentPreset,
+} from '~/lib/opencode/presets'
+import {
+  isX402SandboxPaymentMethod,
+  type SandboxPaymentMethod,
+} from '~/lib/sandboxes'
 
 const SWIPE_DISTANCE_PX = 60
 const DEFAULT_APP_PREVIEW_PORT = '5173'
 const QUICK_PREVIEW_PORTS = ['5173', '4173', '3001', '8080'] as const
+const PREVIEW_TERMINAL_FALLBACK_DELAY_MS = 10_000
 
-function derivePreviewUrlPattern(previewUrl?: string, previewUrlPattern?: string) {
+type PreviewBootResult = {
+  status: 'already-running' | 'started'
+  port: number
+  previewUrl: string
+}
+
+type TerminalAccessResult = {
+  sshCommand: string
+  expiresAt: string | number
+}
+
+type PortPreviewResult = {
+  previewUrl: string
+  port: number
+}
+
+type PreviewCommandSuggestionResult = {
+  command: string
+  framework: string
+  packageManager: string
+  previewScript: string
+  workspacePath: string
+}
+
+type RestartResult = {
+  sandboxId: string
+  previewUrl?: string
+  agentPresetId: string
+}
+
+type DelegatedBudgetSummary = {
+  status?: string | null
+  type?: 'fixed' | 'periodic' | null
+  interval?: 'day' | 'week' | 'month' | null
+  token?: string | null
+  network?: string | null
+  configuredAmountUsdCents?: number | null
+  remainingAmountUsdCents?: number | null
+  periodEndsAt?: string | number | null
+  delegatorSmartAccount?: string | null
+  delegateAddress?: string | null
+  lastSettlementAt?: string | number | null
+  lastRevokedAt?: string | number | null
+}
+
+function derivePreviewUrlPattern(
+  previewUrl?: string,
+  previewUrlPattern?: string,
+) {
   if (previewUrlPattern?.includes('{PORT}')) {
     return previewUrlPattern
   }
@@ -42,7 +102,7 @@ function isValidPreviewPort(value: string) {
   return Number.isInteger(port) && port > 0 && port < 65_536
 }
 
-function formatDateTime(value?: string) {
+function formatDateTime(value?: string | number | null) {
   if (!value) {
     return null
   }
@@ -50,7 +110,7 @@ function formatDateTime(value?: string) {
   const parsedDate = new Date(value)
 
   if (Number.isNaN(parsedDate.getTime())) {
-    return value
+    return String(value)
   }
 
   return parsedDate.toLocaleString()
@@ -68,6 +128,15 @@ export const Route = createFileRoute('/_authed/sandboxes/$sandboxId')({
         convexQuery(api.billing.sandboxUsage, {
           sandboxId: params.sandboxId as Id<'sandboxes'>,
         }),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.dashboardSummary, {}),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.pricingCatalog, {}),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.currentDelegatedBudget, {}),
       ),
     ])
   },
@@ -88,6 +157,17 @@ function SandboxDetailRoute() {
       sandboxId: params.sandboxId as Id<'sandboxes'>,
     }),
   )
+  const { data: billingSummary } = useSuspenseQuery(
+    convexQuery(api.billing.dashboardSummary, {}),
+  )
+  const { data: pricingCatalog } = useSuspenseQuery(
+    convexQuery(api.billing.pricingCatalog, {}),
+  )
+  const { data: delegatedBudgetRecord } = useSuspenseQuery(
+    convexQuery(api.billing.currentDelegatedBudget, {}),
+  )
+  const [paymentMethod, setPaymentMethod] =
+    useState<SandboxPaymentMethod>('credits')
   const [isBusy, setIsBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [isPreviewPanelOpen, setIsPreviewPanelOpen] = useState(false)
@@ -95,16 +175,31 @@ function SandboxDetailRoute() {
   const [isPreviewBooting, setIsPreviewBooting] = useState(false)
   const [previewBootError, setPreviewBootError] = useState<string | null>(null)
   const [previewIframeVersion, setPreviewIframeVersion] = useState(0)
-  const [previewBootRequestNonce, setPreviewBootRequestNonce] = useState(0)
   const [activePreviewUrl, setActivePreviewUrl] = useState<string | null>(null)
   const [previewLogs, setPreviewLogs] = useState<string>('')
   const [previewLogPath, setPreviewLogPath] = useState<string | null>(null)
   const [previewLogsError, setPreviewLogsError] = useState<string | null>(null)
   const [isPreviewLogsLoading, setIsPreviewLogsLoading] = useState(false)
   const [previewLogsRequestNonce, setPreviewLogsRequestNonce] = useState(0)
+  const [previewBootStartedAt, setPreviewBootStartedAt] = useState<
+    number | null
+  >(null)
+  const [showManualPreviewFallback, setShowManualPreviewFallback] =
+    useState(false)
+  const [hasPreviewIframeLoaded, setHasPreviewIframeLoaded] = useState(false)
+  const [previewCommandSuggestion, setPreviewCommandSuggestion] =
+    useState<PreviewCommandSuggestionResult | null>(null)
+  const [previewCommandSuggestionError, setPreviewCommandSuggestionError] =
+    useState<string | null>(null)
+  const [
+    isPreviewCommandSuggestionLoading,
+    setIsPreviewCommandSuggestionLoading,
+  ] = useState(false)
   const [sshCommand, setSshCommand] = useState<string | null>(null)
   const [sshExpiresAt, setSshExpiresAt] = useState<string | null>(null)
-  const [terminalAccessError, setTerminalAccessError] = useState<string | null>(null)
+  const [terminalAccessError, setTerminalAccessError] = useState<string | null>(
+    null,
+  )
   const [isTerminalAccessLoading, setIsTerminalAccessLoading] = useState(false)
   const [webTerminalError, setWebTerminalError] = useState<string | null>(null)
   const [isWebTerminalLoading, setIsWebTerminalLoading] = useState(false)
@@ -113,6 +208,59 @@ function SandboxDetailRoute() {
   const edgeSwipeStartX = useRef<number | null>(null)
   const panelSwipeStartX = useRef<number | null>(null)
   const previewBootAttemptKeyRef = useRef<string | null>(null)
+  const billingSummaryView = billingSummary as typeof billingSummary & {
+    delegatedBudget?: DelegatedBudgetSummary
+  }
+  const delegatedBudget = billingSummaryView.delegatedBudget
+  const hasActiveDelegatedBudget = delegatedBudget?.status === 'active'
+  const pendingPaymentMethod =
+    sandbox?.pendingPaymentMethod as SandboxPaymentMethod | undefined
+
+  useEffect(() => {
+    setPaymentMethod(
+      pendingPaymentMethod === 'x402'
+        ? 'x402'
+        : pendingPaymentMethod === 'delegated_budget'
+          ? 'delegated_budget'
+          : 'credits',
+    )
+  }, [pendingPaymentMethod, sandbox?._id])
+
+  const x402ChainId =
+    sandboxUsage.wallet?.chainId ?? pricingCatalog.environment.chainId
+  const preset = getSafeOpenCodeAgentPreset(sandbox?.agentPresetId)
+  const presetLabel = sandbox?.agentLabel ?? preset.label
+  const modelOption = getOpenCodeModelOptionByProviderAndModel(
+    sandbox?.agentProvider,
+    sandbox?.agentModel,
+  )
+  const providerLabel =
+    modelOption?.providerLabel ?? sandbox?.agentProvider ?? preset.provider
+  const modelLabel =
+    modelOption?.modelLabel ?? sandbox?.agentModel ?? preset.model
+  const previewUrlPattern = derivePreviewUrlPattern(
+    sandbox?.previewUrl,
+    sandbox?.previewUrlPattern,
+  )
+  const appPreviewUrl = useMemo(() => {
+    if (activePreviewUrl) {
+      return activePreviewUrl
+    }
+
+    if (!previewUrlPattern || !isValidPreviewPort(previewPort)) {
+      return null
+    }
+
+    return previewUrlPattern.replace('{PORT}', previewPort)
+  }, [activePreviewUrl, previewPort, previewUrlPattern])
+  const appPreviewIframeUrl = useMemo(() => {
+    if (!appPreviewUrl) {
+      return null
+    }
+
+    const separator = appPreviewUrl.includes('?') ? '&' : '?'
+    return `${appPreviewUrl}${separator}buddypiePreview=${previewIframeVersion}`
+  }, [appPreviewUrl, previewIframeVersion])
 
   async function refreshSandboxQueries() {
     await Promise.all([
@@ -129,7 +277,65 @@ function SandboxDetailRoute() {
           sandboxId: params.sandboxId as Id<'sandboxes'>,
         }).queryKey,
       }),
+      queryClient.invalidateQueries({
+        queryKey: convexQuery(api.billing.dashboardSummary, {}).queryKey,
+      }),
     ])
+  }
+
+  function blockDelegatedBudgetAction() {
+    setError('Set up an active delegated budget before using that payment rail.')
+    document.getElementById('delegated-budget')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }
+
+  async function triggerPreviewBoot() {
+    if (!sandbox || !isValidPreviewPort(previewPort)) {
+      return
+    }
+
+    const port = Number(previewPort)
+    setIsPreviewBooting(true)
+    setPreviewBootError(null)
+    setPreviewBootStartedAt(Date.now())
+    setShowManualPreviewFallback(false)
+    setHasPreviewIframeLoaded(false)
+    setPreviewCommandSuggestion(null)
+    setPreviewCommandSuggestionError(null)
+
+    try {
+      const result =
+        isX402SandboxPaymentMethod(paymentMethod)
+          ? await postJsonWithX402Payment<PreviewBootResult>({
+              url: `/api/x402/sandboxes/${sandbox._id}/preview`,
+              body: { port },
+              chainId: x402ChainId,
+            })
+          : await ensureAppPreviewServer({
+              data: {
+                sandboxId: sandbox._id,
+                port,
+                paymentMethod,
+              } as any,
+            })
+
+      setActivePreviewUrl(result.previewUrl ?? null)
+      setPreviewIframeVersion((value) => value + 1)
+      await refreshSandboxQueries()
+    } catch (bootError) {
+      previewBootAttemptKeyRef.current = null
+      setActivePreviewUrl(null)
+      setPreviewBootError(
+        bootError instanceof Error
+          ? bootError.message
+          : 'Could not start the app preview server.',
+      )
+    } finally {
+      setIsPreviewBooting(false)
+      setPreviewLogsRequestNonce((value) => value + 1)
+    }
   }
 
   async function handleDelete() {
@@ -165,10 +371,27 @@ function SandboxDetailRoute() {
     setIsBusy(true)
     setError(null)
 
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      blockDelegatedBudgetAction()
+      setIsBusy(false)
+      return
+    }
+
     try {
-      const restarted = await restartSandbox({
-        data: { sandboxId: sandbox._id },
-      })
+      const restarted =
+        isX402SandboxPaymentMethod(paymentMethod)
+          ? await postJsonWithX402Payment<RestartResult>({
+              url: `/api/x402/sandboxes/${sandbox._id}/restart`,
+              body: {},
+              chainId: x402ChainId,
+            })
+          : await restartSandbox({
+              data: {
+                sandboxId: sandbox._id,
+                paymentMethod,
+              } as any,
+            })
+
       await refreshSandboxQueries()
       await navigate({
         to: '/sandboxes/$sandboxId',
@@ -185,156 +408,41 @@ function SandboxDetailRoute() {
     }
   }
 
-  if (!sandbox) {
-    return (
-      <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
-        <CardHeader>
-          <CardTitle className="text-2xl font-black uppercase">
-            Workspace missing
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            This sandbox no longer exists or you don't have access.
-          </p>
-        </CardHeader>
-        <CardContent>
-          <Button
-            asChild
-            className="border-2 border-foreground bg-foreground font-black uppercase text-background shadow-[3px_3px_0_var(--accent)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
-          >
-            <Link to="/dashboard">
-              ← Back to dashboard
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const sandboxId = sandbox._id
-  const preset = getSafeOpenCodeAgentPreset(sandbox.agentPresetId)
-  const presetLabel = sandbox.agentLabel ?? preset.label
-  const previewUrlPattern = derivePreviewUrlPattern(
-    sandbox.previewUrl,
-    sandbox.previewUrlPattern,
-  )
-  const appPreviewUrl = useMemo(() => {
-    if (activePreviewUrl) {
-      return activePreviewUrl
-    }
-
-    if (!previewUrlPattern || !isValidPreviewPort(previewPort)) {
-      return null
-    }
-
-    return previewUrlPattern.replace('{PORT}', previewPort)
-  }, [activePreviewUrl, previewPort, previewUrlPattern])
-  const appPreviewIframeUrl = useMemo(() => {
-    if (!appPreviewUrl) {
-      return null
-    }
-
-    const separator = appPreviewUrl.includes('?') ? '&' : '?'
-    return `${appPreviewUrl}${separator}buddypiePreview=${previewIframeVersion}`
-  }, [appPreviewUrl, previewIframeVersion])
-
-  useEffect(() => {
-    setActivePreviewUrl(null)
-  }, [previewPort, sandboxId])
-
-  useEffect(() => {
-    if (!isPreviewPanelOpen) {
-      setIsPreviewBooting(false)
-      setPreviewBootError(null)
-      setPreviewLogsError(null)
-      previewBootAttemptKeyRef.current = null
-      return
-    }
-
-    if (sandbox.status !== 'ready' || !isValidPreviewPort(previewPort)) {
-      return
-    }
-
-    const port = Number(previewPort)
-    const attemptKey = `${sandboxId}:${port}:${previewBootRequestNonce}`
-
-    if (previewBootAttemptKeyRef.current === attemptKey) {
-      return
-    }
-
-    previewBootAttemptKeyRef.current = attemptKey
-    setIsPreviewBooting(true)
-    setPreviewBootError(null)
-    setActivePreviewUrl(null)
-
-    void ensureAppPreviewServer({
-      data: {
-        sandboxId,
-        port,
-      },
-    })
-      .then((result) => {
-        setActivePreviewUrl(result.previewUrl ?? null)
-        setPreviewIframeVersion((value) => value + 1)
-      })
-      .catch((bootError) => {
-        previewBootAttemptKeyRef.current = null
-        setActivePreviewUrl(null)
-        setPreviewBootError(
-          bootError instanceof Error
-            ? bootError.message
-            : 'Could not start the app preview server.',
-        )
-      })
-      .finally(() => {
-        setIsPreviewBooting(false)
-        setPreviewLogsRequestNonce((value) => value + 1)
-      })
-  }, [isPreviewPanelOpen, previewBootRequestNonce, previewPort, sandbox, sandboxId])
-
-  useEffect(() => {
-    if (!isPreviewPanelOpen || !isValidPreviewPort(previewPort)) {
-      return
-    }
-
-    const port = Number(previewPort)
-    setIsPreviewLogsLoading(true)
-    setPreviewLogsError(null)
-
-    void getAppPreviewLogs({
-      data: {
-        sandboxId,
-        port,
-      },
-    })
-      .then((result) => {
-        setPreviewLogs(result.output || 'No logs yet.')
-        setPreviewLogPath(result.logPath)
-      })
-      .catch((logError) => {
-        setPreviewLogsError(
-          logError instanceof Error
-            ? logError.message
-            : 'Could not load app preview logs.',
-        )
-      })
-      .finally(() => {
-        setIsPreviewLogsLoading(false)
-      })
-  }, [isPreviewPanelOpen, previewLogsRequestNonce, previewPort, sandboxId])
-
   async function handleCreateTerminalAccess() {
+    if (!sandbox) {
+      return
+    }
+
     setIsTerminalAccessLoading(true)
     setTerminalAccessError(null)
 
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      blockDelegatedBudgetAction()
+      setIsTerminalAccessLoading(false)
+      return
+    }
+
     try {
-      const access = await createTerminalAccess({
-        data: {
-          sandboxId,
-          expiresInMinutes: 60,
-        },
-      })
+      const access =
+        isX402SandboxPaymentMethod(paymentMethod)
+          ? await postJsonWithX402Payment<TerminalAccessResult>({
+              url: `/api/x402/sandboxes/${sandbox._id}/ssh`,
+              body: {
+                expiresInMinutes: 60,
+              },
+              chainId: x402ChainId,
+            })
+          : await createTerminalAccess({
+              data: {
+                sandboxId: sandbox._id,
+                expiresInMinutes: 60,
+                paymentMethod,
+              } as any,
+            })
+
       setSshCommand(access.sshCommand)
       setSshExpiresAt(String(access.expiresAt))
+      await refreshSandboxQueries()
     } catch (terminalError) {
       setTerminalAccessError(
         terminalError instanceof Error
@@ -347,19 +455,38 @@ function SandboxDetailRoute() {
   }
 
   async function handleOpenWebTerminal() {
+    if (!sandbox) {
+      return
+    }
+
     setIsWebTerminalLoading(true)
     setWebTerminalError(null)
 
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      blockDelegatedBudgetAction()
+      setIsWebTerminalLoading(false)
+      return
+    }
+
     try {
-      const preview = await getPortPreview({
-        data: {
-          sandboxId,
-          port: 22222,
-        },
-      })
+      const preview =
+        isX402SandboxPaymentMethod(paymentMethod)
+          ? await postJsonWithX402Payment<PortPreviewResult>({
+              url: `/api/x402/sandboxes/${sandbox._id}/web-terminal`,
+              body: {},
+              chainId: x402ChainId,
+            })
+          : await getPortPreview({
+              data: {
+                sandboxId: sandbox._id,
+                port: 22222,
+                paymentMethod,
+              } as any,
+            })
 
       setWebTerminalUrl(preview.previewUrl)
       window.open(preview.previewUrl, '_blank', 'noopener,noreferrer')
+      await refreshSandboxQueries()
     } catch (terminalError) {
       setWebTerminalError(
         terminalError instanceof Error
@@ -405,6 +532,190 @@ function SandboxDetailRoute() {
     }
   }
 
+  useEffect(() => {
+    setActivePreviewUrl(null)
+    previewBootAttemptKeyRef.current = null
+    setPreviewBootStartedAt(null)
+    setShowManualPreviewFallback(false)
+    setHasPreviewIframeLoaded(false)
+    setPreviewCommandSuggestion(null)
+    setPreviewCommandSuggestionError(null)
+  }, [previewPort, sandbox?._id, paymentMethod])
+
+  useEffect(() => {
+    if (!isPreviewPanelOpen) {
+      setIsPreviewBooting(false)
+      setPreviewBootError(null)
+      setPreviewLogsError(null)
+      previewBootAttemptKeyRef.current = null
+      setPreviewBootStartedAt(null)
+      setShowManualPreviewFallback(false)
+      setHasPreviewIframeLoaded(false)
+      setPreviewCommandSuggestion(null)
+      setPreviewCommandSuggestionError(null)
+      return
+    }
+
+    if (
+      !sandbox ||
+      sandbox.status !== 'ready' ||
+      !isValidPreviewPort(previewPort)
+    ) {
+      return
+    }
+
+    if (isX402SandboxPaymentMethod(paymentMethod)) {
+      return
+    }
+
+    const port = Number(previewPort)
+    const attemptKey = `${sandbox._id}:${port}:${paymentMethod}`
+
+    if (previewBootAttemptKeyRef.current === attemptKey) {
+      return
+    }
+
+    previewBootAttemptKeyRef.current = attemptKey
+    void triggerPreviewBoot()
+  }, [isPreviewPanelOpen, paymentMethod, previewPort, sandbox])
+
+  useEffect(() => {
+    if (
+      !isPreviewPanelOpen ||
+      !sandbox ||
+      !isValidPreviewPort(previewPort) ||
+      previewBootStartedAt === null ||
+      hasPreviewIframeLoaded
+    ) {
+      return
+    }
+
+    const remainingMs =
+      PREVIEW_TERMINAL_FALLBACK_DELAY_MS -
+      Math.max(0, Date.now() - previewBootStartedAt)
+
+    if (remainingMs <= 0) {
+      setShowManualPreviewFallback(true)
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setShowManualPreviewFallback(true)
+    }, remainingMs)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [
+    hasPreviewIframeLoaded,
+    isPreviewPanelOpen,
+    previewBootStartedAt,
+    previewPort,
+    sandbox,
+  ])
+
+  useEffect(() => {
+    if (
+      !showManualPreviewFallback ||
+      !sandbox ||
+      !isValidPreviewPort(previewPort) ||
+      previewCommandSuggestion ||
+      isPreviewCommandSuggestionLoading
+    ) {
+      return
+    }
+
+    const port = Number(previewPort)
+    setIsPreviewCommandSuggestionLoading(true)
+    setPreviewCommandSuggestionError(null)
+
+    void getAppPreviewCommandSuggestion({
+      data: {
+        sandboxId: sandbox._id,
+        port,
+      },
+    })
+      .then((result) => {
+        setPreviewCommandSuggestion(result)
+      })
+      .catch((commandError) => {
+        setPreviewCommandSuggestionError(
+          commandError instanceof Error
+            ? commandError.message
+            : 'Could not determine a manual preview command.',
+        )
+      })
+      .finally(() => {
+        setIsPreviewCommandSuggestionLoading(false)
+      })
+  }, [
+    isPreviewCommandSuggestionLoading,
+    previewCommandSuggestion,
+    previewPort,
+    sandbox,
+    showManualPreviewFallback,
+  ])
+
+  useEffect(() => {
+    if (hasPreviewIframeLoaded) {
+      setShowManualPreviewFallback(false)
+    }
+  }, [hasPreviewIframeLoaded])
+
+  useEffect(() => {
+    if (!isPreviewPanelOpen || !sandbox || !isValidPreviewPort(previewPort)) {
+      return
+    }
+
+    const port = Number(previewPort)
+    setIsPreviewLogsLoading(true)
+    setPreviewLogsError(null)
+
+    void getAppPreviewLogs({
+      data: {
+        sandboxId: sandbox._id,
+        port,
+      },
+    })
+      .then((result) => {
+        setPreviewLogs(result.output || 'No logs yet.')
+        setPreviewLogPath(result.logPath)
+      })
+      .catch((logError) => {
+        setPreviewLogsError(
+          logError instanceof Error
+            ? logError.message
+            : 'Could not load app preview logs.',
+        )
+      })
+      .finally(() => {
+        setIsPreviewLogsLoading(false)
+      })
+  }, [isPreviewPanelOpen, previewLogsRequestNonce, previewPort, sandbox])
+
+  if (!sandbox) {
+    return (
+      <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
+        <CardHeader>
+          <CardTitle className="text-2xl font-black uppercase">
+            Workspace missing
+          </CardTitle>
+          <p className="text-sm text-muted-foreground">
+            This sandbox no longer exists or you don&apos;t have access.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <Button
+            asChild
+            className="border-2 border-foreground bg-foreground font-black uppercase text-background shadow-[3px_3px_0_var(--accent)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
+          >
+            <Link to="/dashboard">← Back to dashboard</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
   return (
     <main className="flex flex-col gap-6">
       <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
@@ -419,8 +730,17 @@ function SandboxDetailRoute() {
               </Link>
               <div className="flex flex-wrap items-center gap-2">
                 <StatusPill status={sandbox.status} />
-                <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
+                <Badge
+                  variant="outline"
+                  className="border-2 border-foreground font-bold uppercase tracking-widest"
+                >
                   {presetLabel}
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="border-2 border-foreground font-bold uppercase tracking-widest"
+                >
+                  {formatSandboxPaymentMethod(paymentMethod)}
                 </Badge>
               </div>
               <CardTitle className="text-3xl font-black uppercase sm:text-4xl">
@@ -454,143 +774,72 @@ function SandboxDetailRoute() {
 
         <CardContent>
           {error ? (
-            <Alert variant="destructive" className="mb-4 border-2 border-foreground">
+            <Alert
+              variant="destructive"
+              className="mb-4 border-2 border-foreground"
+            >
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-
-          <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
-            <div className="border-2 border-foreground bg-muted p-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="border-2 border-foreground bg-muted p-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                 Branch
               </p>
-              <p className="mt-2 font-bold">{sandbox.repoBranch || 'default'}</p>
-            </div>
-            <div className="border-2 border-foreground bg-muted p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Preset
+              <p className="mt-1 font-bold">
+                {sandbox.repoBranch || 'default'}
               </p>
-              <p className="mt-2 font-bold">{presetLabel}</p>
             </div>
-            <div className="border-2 border-foreground bg-muted p-4">
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Provider
+              </p>
+              <p className="mt-1 font-bold">{providerLabel}</p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Model
+              </p>
+              <p className="mt-1 break-all font-bold">{modelLabel}</p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                 Workspace
               </p>
-              <p className="mt-2 break-all font-bold">
+              <p className="mt-1 break-all font-bold">
                 {sandbox.workspacePath || 'Provisioning...'}
               </p>
             </div>
-            <div className="border-2 border-foreground bg-muted p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Preview
-              </p>
-              {sandbox.previewUrl ? (
-                <a
-                  href={sandbox.previewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-2 inline-block font-bold text-accent-foreground underline decoration-2 underline-offset-4 hover:text-foreground"
-                >
-                  Open in new tab →
-                </a>
-              ) : (
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Waiting for OpenCode...
-                </p>
-              )}
-            </div>
           </div>
 
-          {sandbox.initialPrompt ? (
-            <div className="mt-4 border-2 border-dashed border-foreground bg-muted p-4">
-              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Kickoff Prompt
-              </p>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">
-                {sandbox.initialPrompt}
-              </p>
-            </div>
-          ) : null}
+          <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <PaymentMethodToggle
+              value={paymentMethod}
+              onChange={(nextValue) => {
+                setError(null)
+                setPaymentMethod(nextValue)
+              }}
+              creditsDescription="Use the shared BuddyPie wallet for preview, restart, SSH, and terminal access."
+              x402Description={`Pay per action from your wallet on ${sandboxUsage.wallet?.fundingNetwork ?? 'Base'}.`}
+              delegatedBudgetDescription={
+                hasActiveDelegatedBudget
+                  ? 'Use an active MetaMask delegated budget for the same actions.'
+                  : 'Set up a MetaMask delegated budget before selecting this rail.'
+              }
+            />
 
-          <div className="mt-4 border-2 border-foreground bg-muted p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Reserve Billing
-                </p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Observable BuddyPie actions debit the preset reserve and appear
-                  here with a price version.
-                </p>
-              </div>
-              <Badge
-                variant="outline"
-                className="border-2 border-foreground font-bold uppercase tracking-widest"
-              >
-                Billed {formatUsdCents(sandboxUsage.billedUsdCents)}
-              </Badge>
-            </div>
-
-            <div className="mt-4 grid gap-3 md:grid-cols-3">
-              <div className="border-2 border-foreground bg-background p-3">
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Reserve available
-                </p>
-                <p className="mt-1 font-black">
-                  {formatUsdCents(sandboxUsage.reserve?.availableUsdCents ?? 0)}
-                </p>
-              </div>
-              <div className="border-2 border-foreground bg-background p-3">
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Held
-                </p>
-                <p className="mt-1 font-black">
-                  {formatUsdCents(sandboxUsage.reserve?.heldUsdCents ?? 0)}
-                </p>
-              </div>
-              <div className="border-2 border-foreground bg-background p-3">
-                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Lifetime spent
-                </p>
-                <p className="mt-1 font-black">
-                  {formatUsdCents(
-                    sandboxUsage.reserve?.spentUsdCentsLifetime ?? 0,
-                  )}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2">
-              {sandboxUsage.usageEvents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No settled usage events yet.
-                </p>
-              ) : (
-                sandboxUsage.usageEvents.map((event) => (
-                  <div
-                    key={event._id}
-                    className="flex flex-col gap-2 border-2 border-foreground bg-background p-3 md:flex-row md:items-center md:justify-between"
-                  >
-                    <div>
-                      <p className="text-sm font-black uppercase">
-                        {event.eventType.replace(/_/g, ' ')}
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {event.description}
-                      </p>
-                    </div>
-                    <div className="text-left md:text-right">
-                      <p className="font-black">
-                        {formatUsdCents(event.costUsdCents)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {event.unitPriceVersion}
-                      </p>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
+            <DelegatedBudgetManager
+              id="delegated-budget"
+              summary={delegatedBudget}
+              record={delegatedBudgetRecord}
+              environment={pricingCatalog.environment}
+              onUpdated={refreshSandboxQueries}
+              onSelectRail={() => {
+                setError(null)
+                setPaymentMethod('delegated_budget')
+              }}
+              compact
+            />
           </div>
         </CardContent>
       </Card>
@@ -741,22 +990,107 @@ function SandboxDetailRoute() {
                   Enter a valid port between 1 and 65535.
                 </p>
               ) : null}
-              {isPreviewBooting ? (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Starting the preview server on port {previewPort}...
-                </p>
-              ) : null}
-              {previewBootError ? (
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <p className="text-xs text-destructive">{previewBootError}</p>
+
+              <div className="mt-4 rounded-md border-2 border-foreground bg-background p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                      Preview action
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {isX402SandboxPaymentMethod(paymentMethod)
+                        ? `x402 only prompts when you explicitly request a boot.`
+                        : `Opening this panel auto-boots the preview from your selected rail when needed.`}
+                    </p>
+                  </div>
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => setPreviewBootRequestNonce((value) => value + 1)}
+                    onClick={() => {
+                      previewBootAttemptKeyRef.current = null
+                      void triggerPreviewBoot()
+                    }}
+                    disabled={
+                      isPreviewBooting || !isValidPreviewPort(previewPort)
+                    }
                     className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
                   >
-                    Retry
+                    {isPreviewBooting
+                      ? isX402SandboxPaymentMethod(paymentMethod)
+                        ? 'Waiting for wallet...'
+                        : paymentMethod === 'delegated_budget'
+                          ? 'Settling budget...'
+                          : 'Booting...'
+                      : isX402SandboxPaymentMethod(paymentMethod)
+                        ? 'Pay and boot'
+                        : paymentMethod === 'delegated_budget'
+                          ? 'Use budget and boot'
+                          : 'Retry boot'}
                   </Button>
+                </div>
+                {isPreviewBooting ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Starting the preview server on port {previewPort}...
+                  </p>
+                ) : null}
+                {previewBootError ? (
+                  <p className="mt-2 text-xs text-destructive">
+                    {previewBootError}
+                  </p>
+                ) : null}
+              </div>
+
+              {showManualPreviewFallback ? (
+                <div className="mt-4 rounded-md border-2 border-foreground bg-accent/15 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                        Preview taking longer than 10s
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Open the Daytona terminal and run the dev server
+                        yourself.
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleOpenWebTerminal}
+                      disabled={isWebTerminalLoading}
+                    className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
+                  >
+                    {isWebTerminalLoading
+                        ? isX402SandboxPaymentMethod(paymentMethod)
+                          ? 'Waiting...'
+                          : 'Opening...'
+                        : 'Open Terminal'}
+                    </Button>
+                  </div>
+                  {isPreviewCommandSuggestionLoading ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Preparing a suggested command...
+                    </p>
+                  ) : null}
+                  {previewCommandSuggestion ? (
+                    <div className="mt-2 space-y-2">
+                      <p className="text-xs text-muted-foreground">
+                        Suggested command for{' '}
+                        {previewCommandSuggestion.packageManager}
+                        {' / '}
+                        {previewCommandSuggestion.framework}
+                        {' / '}
+                        {previewCommandSuggestion.previewScript}
+                      </p>
+                      <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded border border-foreground/30 bg-background p-2 text-[11px]">
+                        {previewCommandSuggestion.command}
+                      </pre>
+                    </div>
+                  ) : null}
+                  {previewCommandSuggestionError ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {previewCommandSuggestionError}
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -771,26 +1105,38 @@ function SandboxDetailRoute() {
                       variant="outline"
                       onClick={handleOpenWebTerminal}
                       disabled={isWebTerminalLoading}
-                      className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
-                    >
-                      {isWebTerminalLoading ? 'Opening...' : 'Web Terminal'}
+                    className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
+                  >
+                    {isWebTerminalLoading
+                        ? isX402SandboxPaymentMethod(paymentMethod)
+                          ? 'Waiting...'
+                          : 'Opening...'
+                        : 'Web Terminal'}
                     </Button>
                     <Button
                       type="button"
                       variant="outline"
                       onClick={handleCreateTerminalAccess}
                       disabled={isTerminalAccessLoading}
-                      className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
-                    >
-                      {isTerminalAccessLoading ? 'Creating...' : 'Generate SSH'}
+                    className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
+                  >
+                    {isTerminalAccessLoading
+                        ? isX402SandboxPaymentMethod(paymentMethod)
+                          ? 'Waiting...'
+                          : 'Creating...'
+                        : 'Generate SSH'}
                     </Button>
                   </div>
                 </div>
                 {terminalAccessError ? (
-                  <p className="mt-2 text-xs text-destructive">{terminalAccessError}</p>
+                  <p className="mt-2 text-xs text-destructive">
+                    {terminalAccessError}
+                  </p>
                 ) : null}
                 {webTerminalError ? (
-                  <p className="mt-2 text-xs text-destructive">{webTerminalError}</p>
+                  <p className="mt-2 text-xs text-destructive">
+                    {webTerminalError}
+                  </p>
                 ) : null}
                 {webTerminalUrl ? (
                   <a
@@ -815,7 +1161,8 @@ function SandboxDetailRoute() {
                   </div>
                 ) : (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Generate an SSH command to open a terminal directly in this sandbox.
+                    Generate an SSH command to open a terminal directly in this
+                    sandbox.
                   </p>
                 )}
               </div>
@@ -828,7 +1175,9 @@ function SandboxDetailRoute() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => setPreviewLogsRequestNonce((value) => value + 1)}
+                    onClick={() =>
+                      setPreviewLogsRequestNonce((value) => value + 1)
+                    }
                     disabled={isPreviewLogsLoading}
                     className="h-7 border-2 border-foreground px-2 text-[10px] font-black uppercase"
                   >
@@ -836,10 +1185,14 @@ function SandboxDetailRoute() {
                   </Button>
                 </div>
                 {previewLogPath ? (
-                  <p className="mt-2 text-xs text-muted-foreground">{previewLogPath}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {previewLogPath}
+                  </p>
                 ) : null}
                 {previewLogsError ? (
-                  <p className="mt-2 text-xs text-destructive">{previewLogsError}</p>
+                  <p className="mt-2 text-xs text-destructive">
+                    {previewLogsError}
+                  </p>
                 ) : (
                   <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-foreground/30 bg-muted p-2 text-[11px]">
                     {previewLogs || 'No logs yet.'}
@@ -867,6 +1220,7 @@ function SandboxDetailRoute() {
                   <iframe
                     title={`${sandbox.repoName} app preview on port ${previewPort}`}
                     src={appPreviewIframeUrl ?? appPreviewUrl}
+                    onLoad={() => setHasPreviewIframeLoaded(true)}
                     className="h-full w-full bg-background"
                   />
                 </div>
@@ -874,7 +1228,9 @@ function SandboxDetailRoute() {
                 <div className="flex h-full items-center justify-center p-6 text-center">
                   <p className="max-w-sm text-sm text-muted-foreground">
                     {previewUrlPattern
-                      ? 'Choose a valid port to load your app preview.'
+                      ? isX402SandboxPaymentMethod(paymentMethod)
+                        ? 'Choose a port, then use Pay and boot to load the app preview with x402 if needed.'
+                        : 'Choose a valid port to load your app preview.'
                       : 'App preview URL is not ready yet. Restarting the sandbox will populate the preview pattern for this panel.'}
                   </p>
                 </div>
