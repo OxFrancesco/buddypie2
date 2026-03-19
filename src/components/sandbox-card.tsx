@@ -1,9 +1,18 @@
 import { Link } from '@tanstack/react-router'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '~/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '~/components/ui/card'
 import { StatusPill } from '~/components/status-pill'
-import { getSafeOpenCodeAgentPreset } from '~/lib/opencode/presets'
+import {
+  getOpenCodeModelOptionByProviderAndModel,
+  getSafeOpenCodeAgentPreset,
+} from '~/lib/opencode/presets'
 
 type SandboxCardProps = {
   sandbox: {
@@ -36,6 +45,14 @@ export function SandboxCard({
 }: SandboxCardProps) {
   const preset = getSafeOpenCodeAgentPreset(sandbox.agentPresetId)
   const presetLabel = sandbox.agentLabel ?? preset.label
+  const modelOption = getOpenCodeModelOptionByProviderAndModel(
+    sandbox.agentProvider,
+    sandbox.agentModel,
+  )
+  const providerLabel =
+    modelOption?.providerLabel ?? sandbox.agentProvider ?? preset.provider
+  const modelLabel =
+    modelOption?.modelLabel ?? sandbox.agentModel ?? preset.model
 
   return (
     <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
@@ -43,7 +60,10 @@ export function SandboxCard({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill status={sandbox.status} />
-            <Badge variant="outline" className="border-2 border-foreground font-bold uppercase tracking-widest">
+            <Badge
+              variant="outline"
+              className="border-2 border-foreground font-bold uppercase tracking-widest"
+            >
               {presetLabel}
             </Badge>
           </div>
@@ -68,8 +88,12 @@ export function SandboxCard({
             </Button>
           </div>
         </div>
-        <CardTitle className="mt-2 text-xl font-black">{sandbox.repoName}</CardTitle>
-        <p className="break-all text-sm text-muted-foreground">{sandbox.repoUrl}</p>
+        <CardTitle className="mt-2 text-xl font-black">
+          {sandbox.repoName}
+        </CardTitle>
+        <p className="break-all text-sm text-muted-foreground">
+          {sandbox.repoUrl}
+        </p>
       </CardHeader>
 
       <CardContent>
@@ -86,6 +110,14 @@ export function SandboxCard({
             </p>
             <p className="mt-1 break-all font-bold">
               {sandbox.workspacePath || 'Provisioning...'}
+            </p>
+          </div>
+          <div className="border-2 border-foreground bg-muted p-3 lg:col-span-2">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+              Model
+            </p>
+            <p className="mt-1 font-bold">
+              {providerLabel} · {modelLabel}
             </p>
           </div>
           <div className="border-2 border-foreground bg-muted p-3 lg:col-span-2">

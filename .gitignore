@@ -11,6 +11,9 @@ docs
 .output
 .nitro
 .tanstack
+.convex-tmp
+/cache/
+/contracts/out/
 
 /build/
 /api/

@@ -6,7 +6,19 @@ import type {
   OpenCodeAgentPresetId,
   OpenCodeSkillPermission,
 } from '~/lib/opencode/presets'
-import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
+import {
+  getOpenCodeAgentPreset,
+  resolveOpenCodeModelOption,
+  withOpenCodeModelOption,
+} from '~/lib/opencode/presets'
+import {
+  buildWorkspaceBootstrapInstructions,
+  buildWorkspaceBootstrapPromptPrefix,
+  ensureDirectoryInGitignore,
+  resolveDocsAppPath,
+  type DocsAppPathInspection,
+  type WorkspaceBootstrapRuntimeContext,
+} from '~/lib/opencode/workspace-bootstrap'
 import { getWorkspacePath, normalizeSandboxInput } from '~/lib/sandboxes'
 
 const OPENCODE_PORT = 3000
@@ -33,6 +45,10 @@ type ExecuteCommandResponse = {
   result?: string
   stdout?: string
   output?: string
+}
+
+type WorkspaceBootstrapResult = {
+  runtimeContext?: WorkspaceBootstrapRuntimeContext
 }
 
 const SEEDED_SESSION_PAYLOAD_MARKER = '__BUDDYPIE_SEEDED_SESSION__'
@@ -141,24 +157,176 @@ if [ ! -f package.json ]; then
   exit 1
 fi
 
-PREVIEW_SCRIPT=$(node -e "const fs=require('node:fs');const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));const scripts=pkg.scripts??{};if(typeof scripts['dev:web']==='string'){process.stdout.write('dev:web');process.exit(0)}if(typeof scripts.dev==='string'){process.stdout.write('dev');process.exit(0)}process.exit(1)" || true)
+PREVIEW_METADATA=$(node <<'NODE'
+const fs = require('node:fs')
+
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+const scripts = pkg.scripts ?? {}
+const deps = {
+  ...(pkg.dependencies ?? {}),
+  ...(pkg.devDependencies ?? {}),
+}
+const packageManagerField =
+  typeof pkg.packageManager === 'string' ? pkg.packageManager : ''
+const packageManagerName = packageManagerField.split('@')[0]
+const hasFile = (name) => fs.existsSync(name)
+const scriptPreference = ['dev:web', 'dev', 'start', 'web', 'server']
+const previewScript =
+  scriptPreference.find((name) => typeof scripts[name] === 'string') ?? ''
+const previewScriptCommand =
+  typeof scripts[previewScript] === 'string' ? scripts[previewScript] : ''
+
+let packageManager = 'npm'
+
+if (
+  packageManagerName === 'bun' ||
+  hasFile('bun.lock') ||
+  hasFile('bun.lockb')
+) {
+  packageManager = 'bun'
+} else if (
+  packageManagerName === 'pnpm' ||
+  hasFile('pnpm-lock.yaml')
+) {
+  packageManager = 'pnpm'
+} else if (
+  packageManagerName === 'yarn' ||
+  hasFile('yarn.lock')
+) {
+  packageManager = 'yarn'
+}
+
+let framework = 'generic'
+const script = previewScriptCommand.toLowerCase()
+
+if (deps.expo || script.includes('expo ')) {
+  framework = 'expo'
+} else if (deps.next || script.includes('next ')) {
+  framework = 'next'
+} else if (
+  deps.astro ||
+  script.includes('astro ') ||
+  script.startsWith('astro')
+) {
+  framework = 'astro'
+} else if (
+  deps.vite ||
+  deps['@sveltejs/kit'] ||
+  deps['solid-start'] ||
+  script.includes('vite ') ||
+  script.startsWith('vite')
+) {
+  framework = 'vite'
+} else if (
+  deps['react-scripts'] ||
+  script.includes('react-scripts ')
+) {
+  framework = 'cra'
+}
+
+process.stdout.write(
+  JSON.stringify({
+    framework,
+    packageManager,
+    previewScript,
+  }),
+)
+NODE
+)
+
+PREVIEW_SCRIPT=$(node -e "const meta=JSON.parse(process.argv[1]);process.stdout.write(meta.previewScript||'')" "$PREVIEW_METADATA")
 
 if [ -z "$PREVIEW_SCRIPT" ]; then
-  echo "No dev:web or dev script found in package.json."
+  echo "No supported preview script found in package.json. Expected one of dev:web, dev, start, web, or server."
   exit 1
 fi
 
-if [ ! -d node_modules ]; then
-  if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
-    npm ci || npm install
-  else
-    npm install
-  fi
+PACKAGE_MANAGER=$(node -e "const meta=JSON.parse(process.argv[1]);process.stdout.write(meta.packageManager||'npm')" "$PREVIEW_METADATA")
+FRAMEWORK=$(node -e "const meta=JSON.parse(process.argv[1]);process.stdout.write(meta.framework||'generic')" "$PREVIEW_METADATA")
+
+if [ "$PACKAGE_MANAGER" = "bun" ]; then
+  export PATH="$HOME/.bun/bin:$PATH"
+elif [ "$PACKAGE_MANAGER" = "pnpm" ] || [ "$PACKAGE_MANAGER" = "yarn" ]; then
+  corepack enable >/dev/null 2>&1 || true
 fi
 
-nohup sh -lc "CI=1 PORT=${port} npm run $PREVIEW_SCRIPT -- --host 0.0.0.0 --port ${port}" > ${previewLogPath} 2>&1 &
+if ! command -v "$PACKAGE_MANAGER" >/dev/null 2>&1; then
+  echo "Package manager '$PACKAGE_MANAGER' is unavailable in the sandbox, falling back to npm."
+  PACKAGE_MANAGER="npm"
+fi
 
-echo "Started npm script '$PREVIEW_SCRIPT' for app preview on port ${port}."
+if [ ! -d node_modules ]; then
+  case "$PACKAGE_MANAGER" in
+    bun)
+      bun install --frozen-lockfile || bun install
+      ;;
+    pnpm)
+      pnpm install --frozen-lockfile || pnpm install
+      ;;
+    yarn)
+      yarn install --immutable || yarn install --frozen-lockfile || yarn install
+      ;;
+    *)
+      if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+        npm ci || npm install
+      else
+        npm install
+      fi
+      ;;
+  esac
+fi
+
+PREVIEW_START_COMMAND=$(node - "$PACKAGE_MANAGER" "$FRAMEWORK" "$PREVIEW_SCRIPT" "${port}" <<'NODE'
+const [packageManager, framework, previewScript, port] = process.argv.slice(2)
+
+function buildRunCommand(pm, script, args) {
+  if (pm === 'yarn') {
+    return args ? 'yarn ' + script + ' ' + args : 'yarn ' + script
+  }
+
+  if (pm === 'bun') {
+    return args
+      ? 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' +
+          script +
+          ' ' +
+          args
+      : 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' + script
+  }
+
+  const baseCommand = pm + ' run ' + script
+  return args ? baseCommand + ' -- ' + args : baseCommand
+}
+
+let args = ''
+
+if (framework === 'next') {
+  args = '--hostname 0.0.0.0 -p ' + port
+} else if (framework === 'vite' || framework === 'astro') {
+  args = '--host 0.0.0.0 --port ' + port
+}
+
+let command = ''
+
+if (framework === 'expo') {
+  command =
+    'CI=1 PORT=' +
+    port +
+    ' npx expo start --web --non-interactive --host lan --port ' +
+    port
+} else {
+  const baseCommand = buildRunCommand(packageManager, previewScript, args)
+  command =
+    'CI=1 HOST=0.0.0.0 HOSTNAME=0.0.0.0 PORT=' + port + ' ' + baseCommand
+}
+
+process.stdout.write(command)
+NODE
+)
+
+printf "Detected package manager: %s\\nDetected framework: %s\\nUsing preview script: %s\\nStarting command: %s\\n\\n" "$PACKAGE_MANAGER" "$FRAMEWORK" "$PREVIEW_SCRIPT" "$PREVIEW_START_COMMAND" > ${previewLogPath}
+nohup sh -lc "$PREVIEW_START_COMMAND" >> ${previewLogPath} 2>&1 &
+
+echo "Started preview script '$PREVIEW_SCRIPT' with $PACKAGE_MANAGER for app preview on port ${port}."
 `.trim()
 }
 
@@ -220,6 +388,48 @@ function parseSeededSessionPayload(stdout: string) {
   }
 }
 
+function parseJsonCommandOutput<T>(response: ExecuteCommandResponse) {
+  const stdout = getCommandStdout(response).trim()
+
+  if (response.exitCode !== undefined && response.exitCode !== 0) {
+    throw new Error(summarizeCommandOutput(stdout))
+  }
+
+  if (!stdout) {
+    throw new Error('No command output was captured.')
+  }
+
+  try {
+    return JSON.parse(stdout) as T
+  } catch {
+    throw new Error(
+      `Command returned invalid JSON: ${summarizeCommandOutput(stdout)}`,
+    )
+  }
+}
+
+function buildManagedInstructionsContent(
+  preset: OpenCodeAgentPreset,
+  runtimeContext?: WorkspaceBootstrapRuntimeContext,
+) {
+  const runtimeInstructions =
+    buildWorkspaceBootstrapInstructions(runtimeContext)
+  return runtimeInstructions
+    ? `${preset.instructionsMd}\n\n${runtimeInstructions}`
+    : preset.instructionsMd
+}
+
+function buildInitialPromptContent(
+  initialPrompt: string,
+  runtimeContext?: WorkspaceBootstrapRuntimeContext,
+) {
+  const runtimePromptPrefix =
+    buildWorkspaceBootstrapPromptPrefix(runtimeContext)
+  return runtimePromptPrefix
+    ? `${runtimePromptPrefix}\n\n${initialPrompt}`
+    : initialPrompt
+}
+
 function buildSkillPermissions(
   preset: OpenCodeAgentPreset,
 ): Record<string, OpenCodeSkillPermission> {
@@ -239,11 +449,33 @@ function buildOpenCodeConfig(
   previewUrlPattern: string,
 ) {
   const skillPermissions = buildSkillPermissions(preset)
-  const modelId = `${preset.provider}/${preset.model}`
+  const usesCustomOpenRouterModel =
+    preset.provider === 'openrouter' && preset.model.includes('/')
+  const modelId =
+    preset.provider === 'openrouter'
+      ? usesCustomOpenRouterModel
+        ? preset.model
+        : `${preset.provider}.${preset.model}`
+      : `${preset.provider}/${preset.model}`
+  const openRouterProviderConfig = usesCustomOpenRouterModel
+    ? {
+        openrouter: {
+          models: {
+            [preset.model]: {},
+          },
+        },
+      }
+    : null
 
   return JSON.stringify({
     $schema: 'https://opencode.ai/config.json',
     model: modelId,
+    ...(openRouterProviderConfig
+      ? {
+          provider: openRouterProviderConfig,
+          providers: openRouterProviderConfig,
+        }
+      : {}),
     default_agent: preset.id,
     instructions: ['.buddypie/opencode/AGENTS.md'],
     permission: {
@@ -320,6 +552,237 @@ async function uploadTextFile(
   await sandbox.fs.uploadFile(Buffer.from(content, 'utf8'), remotePath)
 }
 
+async function downloadTextFile(sandbox: Sandbox, remotePath: string) {
+  try {
+    const file = await sandbox.fs.downloadFile(remotePath)
+    return Buffer.isBuffer(file) ? file.toString('utf8') : null
+  } catch {
+    return null
+  }
+}
+
+async function ensureWorkspaceGitignoreDirectory(
+  sandbox: Sandbox,
+  workspacePath: string,
+  directory: string,
+) {
+  const gitignorePath = pathPosix.join(workspacePath, '.gitignore')
+  const existingContent = (await downloadTextFile(sandbox, gitignorePath)) ?? ''
+  const nextContent = ensureDirectoryInGitignore(existingContent, directory)
+
+  if (nextContent !== existingContent) {
+    await uploadTextFile(sandbox, gitignorePath, nextContent)
+  }
+}
+
+async function inspectDocsAppPaths(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  preferredDocsPath: string
+  fallbackDocsPath: string
+}) {
+  const inspectScript = `
+const fs = require('node:fs')
+const path = require('node:path')
+
+function inspect(targetPath) {
+  const resolvedPath = path.resolve(process.cwd(), targetPath)
+  const exists = fs.existsSync(resolvedPath)
+
+  if (!exists) {
+    return { exists: false, looksLikeFumadocs: false }
+  }
+
+  const packageJsonPath = path.join(resolvedPath, 'package.json')
+  let looksLikeFumadocs = false
+
+  if (fs.existsSync(packageJsonPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+      const deps = {
+        ...(pkg.dependencies ?? {}),
+        ...(pkg.devDependencies ?? {}),
+      }
+      looksLikeFumadocs = [
+        'fumadocs-core',
+        'fumadocs-mdx',
+        'fumadocs-ui',
+      ].some((name) => typeof deps[name] === 'string')
+    } catch {}
+  }
+
+  if (!looksLikeFumadocs) {
+    looksLikeFumadocs =
+      fs.existsSync(path.join(resolvedPath, 'source.config.ts')) ||
+      fs.existsSync(path.join(resolvedPath, 'source.config.js')) ||
+      fs.existsSync(path.join(resolvedPath, 'content', 'docs'))
+  }
+
+  return { exists, looksLikeFumadocs }
+}
+
+const preferred = inspect(process.argv[1])
+const fallback = inspect(process.argv[2])
+
+process.stdout.write(
+  JSON.stringify({
+    preferredPathExists: preferred.exists,
+    preferredPathLooksLikeFumadocs: preferred.looksLikeFumadocs,
+    fallbackPathExists: fallback.exists,
+    fallbackPathLooksLikeFumadocs: fallback.looksLikeFumadocs,
+  }),
+)
+`.trim()
+  const response = (await args.sandbox.process.executeCommand(
+    `node -e ${quoteShellArg(inspectScript)} ${quoteShellArg(args.preferredDocsPath)} ${quoteShellArg(args.fallbackDocsPath)}`,
+    args.workspacePath,
+    undefined,
+    30,
+  )) as ExecuteCommandResponse
+
+  return parseJsonCommandOutput<DocsAppPathInspection>(response)
+}
+
+async function ensureReferenceRepository(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  repoUrl: string
+  branch: string
+  relativePath: string
+}) {
+  const remotePath = pathPosix.join(args.workspacePath, args.relativePath)
+  const inspectScript = `
+const fs = require('node:fs')
+const path = require('node:path')
+const target = path.resolve(process.cwd(), process.argv[1])
+process.stdout.write(
+  JSON.stringify({
+    exists: fs.existsSync(target),
+    isGitRepo: fs.existsSync(path.join(target, '.git')),
+  }),
+)
+`.trim()
+  const inspectResponse = (await args.sandbox.process.executeCommand(
+    `node -e ${quoteShellArg(inspectScript)} ${quoteShellArg(args.relativePath)}`,
+    args.workspacePath,
+    undefined,
+    30,
+  )) as ExecuteCommandResponse
+  const state = parseJsonCommandOutput<{
+    exists: boolean
+    isGitRepo: boolean
+  }>(inspectResponse)
+
+  if (state.exists && !state.isGitRepo) {
+    throw new Error(
+      `Cannot prepare '${args.relativePath}' because that path already exists and is not a Git repository.`,
+    )
+  }
+
+  if (!state.exists) {
+    await ensureRemoteDirectory(args.sandbox, pathPosix.dirname(remotePath))
+    await args.sandbox.git.clone(args.repoUrl, remotePath, args.branch)
+  }
+
+  return remotePath
+}
+
+async function scaffoldDocsApp(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  docsAppPath: string
+  docsTemplate: string
+  packageManager: string
+}) {
+  const scaffoldCommand = `
+set -e
+export PATH="$HOME/.bun/bin:$PATH"
+
+BUN_BIN=$(command -v bun || true)
+
+if [ -z "$BUN_BIN" ]; then
+  echo "Bun is required in the Daytona sandbox to scaffold the docs app."
+  exit 1
+fi
+
+CI=1 "$BUN_BIN" x create-fumadocs-app ${quoteShellArg(args.docsAppPath)} --template ${quoteShellArg(args.docsTemplate)} --pm ${quoteShellArg(args.packageManager)} --install --no-git
+`.trim()
+  const response = (await args.sandbox.process.executeCommand(
+    scaffoldCommand,
+    args.workspacePath,
+    undefined,
+    300,
+  )) as ExecuteCommandResponse
+
+  if (response.exitCode !== undefined && response.exitCode !== 0) {
+    throw new Error(
+      `Fumadocs scaffolding failed: ${summarizeCommandOutput(
+        getCommandStdout(response),
+      )}`,
+    )
+  }
+}
+
+async function bootstrapWorkspace(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  preset: OpenCodeAgentPreset
+}): Promise<WorkspaceBootstrapResult> {
+  const bootstrap = args.preset.workspaceBootstrap
+
+  if (!bootstrap) {
+    return {}
+  }
+
+  if (bootstrap.kind !== 'fumadocs-docs-app') {
+    return {}
+  }
+
+  const sourceRepoPath = await ensureReferenceRepository({
+    sandbox: args.sandbox,
+    workspacePath: args.workspacePath,
+    repoUrl: bootstrap.sourceRepoUrl,
+    branch: bootstrap.sourceRepoBranch,
+    relativePath: bootstrap.sourceRepoPath,
+  })
+
+  await ensureWorkspaceGitignoreDirectory(
+    args.sandbox,
+    args.workspacePath,
+    'sources',
+  )
+
+  const inspection = await inspectDocsAppPaths({
+    sandbox: args.sandbox,
+    workspacePath: args.workspacePath,
+    preferredDocsPath: bootstrap.preferredDocsPath,
+    fallbackDocsPath: bootstrap.fallbackDocsPath,
+  })
+  const docsApp = resolveDocsAppPath(bootstrap, inspection)
+  const docsAppPath = pathPosix.join(args.workspacePath, docsApp.docsAppPath)
+
+  if (docsApp.shouldScaffold) {
+    await scaffoldDocsApp({
+      sandbox: args.sandbox,
+      workspacePath: args.workspacePath,
+      docsAppPath: docsApp.docsAppPath,
+      docsTemplate: bootstrap.docsTemplate,
+      packageManager: bootstrap.packageManager,
+    })
+  }
+
+  return {
+    runtimeContext: {
+      repoRoot: args.workspacePath,
+      sourceRepoUrl: bootstrap.sourceRepoUrl,
+      sourceRepoBranch: bootstrap.sourceRepoBranch,
+      sourceRepoPath,
+      docsAppPath,
+      packageManager: bootstrap.packageManager,
+    },
+  }
+}
+
 async function hideManagedFilesFromGitStatus(
   sandbox: Sandbox,
   workspacePath: string,
@@ -357,12 +820,17 @@ async function writeManagedWorkspaceFiles(
   sandbox: Sandbox,
   workspacePath: string,
   preset: OpenCodeAgentPreset,
+  runtimeContext?: WorkspaceBootstrapRuntimeContext,
 ) {
   const instructionsPath = pathPosix.join(
     workspacePath,
     '.buddypie/opencode/AGENTS.md',
   )
-  await uploadTextFile(sandbox, instructionsPath, preset.instructionsMd)
+  await uploadTextFile(
+    sandbox,
+    instructionsPath,
+    buildManagedInstructionsContent(preset, runtimeContext),
+  )
 
   for (const skill of preset.skills) {
     const skillPath = pathPosix.join(
@@ -560,6 +1028,8 @@ export async function createOpenCodeSandbox(args: {
   repoUrl: string
   branch?: string
   agentPresetId: string
+  agentProvider?: string
+  agentModel?: string
   initialPrompt?: string
   githubToken?: string | null
 }) {
@@ -567,7 +1037,14 @@ export async function createOpenCodeSandbox(args: {
     apiKey: getRequiredDaytonaApiKey(),
     apiUrl: getDaytonaApiUrl(),
   })
-  const preset = getOpenCodeAgentPreset(args.agentPresetId)
+  const presetDefaults = getOpenCodeAgentPreset(args.agentPresetId)
+  const modelOption = resolveOpenCodeModelOption({
+    provider: args.agentProvider,
+    model: args.agentModel,
+    fallbackProvider: presetDefaults.provider,
+    fallbackModel: presetDefaults.model,
+  })
+  const preset = withOpenCodeModelOption(presetDefaults, modelOption)
   let sandbox: Sandbox | undefined
 
   try {
@@ -584,9 +1061,23 @@ export async function createOpenCodeSandbox(args: {
       initialPrompt: args.initialPrompt,
       githubToken: args.githubToken,
     })
+    const workspaceBootstrap = await bootstrapWorkspace({
+      sandbox,
+      workspacePath: repo.workspacePath,
+      preset,
+    })
     const launchEnvironment = buildLaunchEnvironment(preset, args.githubToken)
+    const seededInitialPrompt = buildInitialPromptContent(
+      repo.initialPrompt,
+      workspaceBootstrap.runtimeContext,
+    )
 
-    await writeManagedWorkspaceFiles(sandbox, repo.workspacePath, preset)
+    await writeManagedWorkspaceFiles(
+      sandbox,
+      repo.workspacePath,
+      preset,
+      workspaceBootstrap.runtimeContext,
+    )
     await sandbox.process.executeCommand(
       `npm i -g opencode-ai@${OPENCODE_VERSION}`,
       undefined,
@@ -605,7 +1096,7 @@ export async function createOpenCodeSandbox(args: {
       workspacePath: repo.workspacePath,
       repoName: repo.repoName,
       preset,
-      initialPrompt: repo.initialPrompt,
+      initialPrompt: seededInitialPrompt,
     })
 
     return {
@@ -699,6 +1190,227 @@ export async function ensureSandboxAppPreviewServer(args: {
   throw new Error(
     `The preview command started but port ${args.port} is still unreachable. Check .buddypie/logs/app-preview-${args.port}.log in the sandbox.`,
   )
+}
+
+export async function getSandboxAppPreviewStatus(args: {
+  daytonaSandboxId: string
+  workspacePath: string
+  port: number
+}) {
+  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
+    throw new Error('Choose a valid preview port between 1 and 65535.')
+  }
+
+  const daytona = new Daytona({
+    apiKey: getRequiredDaytonaApiKey(),
+    apiUrl: getDaytonaApiUrl(),
+  })
+  const sandbox = await daytona.get(args.daytonaSandboxId)
+
+  if (
+    !(await isPortListeningInSandbox(sandbox, args.workspacePath, args.port))
+  ) {
+    return {
+      status: 'not-running' as const,
+      port: args.port,
+    }
+  }
+
+  const previewLink = await sandbox.getPreviewLink(args.port)
+
+  return {
+    status: 'already-running' as const,
+    port: args.port,
+    previewUrl: previewLink.url,
+  }
+}
+
+export async function getSandboxAppPreviewCommandSuggestion(args: {
+  daytonaSandboxId: string
+  workspacePath: string
+  port: number
+}) {
+  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
+    throw new Error('Choose a valid preview port between 1 and 65535.')
+  }
+
+  const daytona = new Daytona({
+    apiKey: getRequiredDaytonaApiKey(),
+    apiUrl: getDaytonaApiUrl(),
+  })
+  const sandbox = await daytona.get(args.daytonaSandboxId)
+  const response = (await sandbox.process.executeCommand(
+    `
+node - ${args.port} <<'NODE'
+const fs = require('node:fs')
+const port = Number(process.argv[2] || process.argv[1] || 3000)
+
+if (!fs.existsSync('package.json')) {
+  console.error('No package.json found in workspace.')
+  process.exit(1)
+}
+
+const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+const scripts = pkg.scripts ?? {}
+const deps = {
+  ...(pkg.dependencies ?? {}),
+  ...(pkg.devDependencies ?? {}),
+}
+const packageManagerField =
+  typeof pkg.packageManager === 'string' ? pkg.packageManager : ''
+const packageManagerName = packageManagerField.split('@')[0]
+const hasFile = (name) => fs.existsSync(name)
+const scriptPreference = ['dev:web', 'dev', 'start', 'web', 'server']
+const previewScript =
+  scriptPreference.find((name) => typeof scripts[name] === 'string') ?? ''
+const previewScriptCommand =
+  typeof scripts[previewScript] === 'string' ? scripts[previewScript] : ''
+
+if (!previewScript) {
+  console.error(
+    'No supported preview script found in package.json. Expected one of dev:web, dev, start, web, or server.',
+  )
+  process.exit(1)
+}
+
+let packageManager = 'npm'
+
+if (
+  packageManagerName === 'bun' ||
+  hasFile('bun.lock') ||
+  hasFile('bun.lockb')
+) {
+  packageManager = 'bun'
+} else if (
+  packageManagerName === 'pnpm' ||
+  hasFile('pnpm-lock.yaml')
+) {
+  packageManager = 'pnpm'
+} else if (
+  packageManagerName === 'yarn' ||
+  hasFile('yarn.lock')
+) {
+  packageManager = 'yarn'
+}
+
+let framework = 'generic'
+const script = previewScriptCommand.toLowerCase()
+
+if (deps.expo || script.includes('expo ')) {
+  framework = 'expo'
+} else if (deps.next || script.includes('next ')) {
+  framework = 'next'
+} else if (
+  deps.astro ||
+  script.includes('astro ') ||
+  script.startsWith('astro')
+) {
+  framework = 'astro'
+} else if (
+  deps.vite ||
+  deps['@sveltejs/kit'] ||
+  deps['solid-start'] ||
+  script.includes('vite ') ||
+  script.startsWith('vite')
+) {
+  framework = 'vite'
+} else if (
+  deps['react-scripts'] ||
+  script.includes('react-scripts ')
+) {
+  framework = 'cra'
+}
+
+function buildRunCommand(pm, scriptName, args) {
+  if (pm === 'yarn') {
+    return args ? 'yarn ' + scriptName + ' ' + args : 'yarn ' + scriptName
+  }
+
+  if (pm === 'bun') {
+    return args
+      ? 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' +
+          scriptName +
+          ' ' +
+          args
+      : 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' + scriptName
+  }
+
+  const baseCommand = pm + ' run ' + scriptName
+  return args ? baseCommand + ' -- ' + args : baseCommand
+}
+
+let commandArgs = ''
+
+if (framework === 'next') {
+  commandArgs = '--hostname 0.0.0.0 -p ' + port
+} else if (framework === 'vite' || framework === 'astro') {
+  commandArgs = '--host 0.0.0.0 --port ' + port
+}
+
+const command =
+  framework === 'expo'
+    ? 'CI=1 PORT=' +
+      port +
+      ' npx expo start --web --non-interactive --host lan --port ' +
+      port
+    : 'CI=1 HOST=0.0.0.0 HOSTNAME=0.0.0.0 PORT=' +
+      port +
+      ' ' +
+      buildRunCommand(packageManager, previewScript, commandArgs)
+
+process.stdout.write(
+  JSON.stringify({
+    command,
+    framework,
+    packageManager,
+    previewScript,
+  }),
+)
+NODE
+    `.trim(),
+    args.workspacePath,
+    undefined,
+    30,
+  )) as ExecuteCommandResponse
+
+  if (response.exitCode !== undefined && response.exitCode !== 0) {
+    throw new Error(
+      `Could not determine a preview command for this repo: ${summarizeCommandOutput(getCommandStdout(response))}`,
+    )
+  }
+
+  const stdout = getCommandStdout(response).trim()
+
+  if (!stdout) {
+    throw new Error('Could not determine a preview command for this repo.')
+  }
+
+  let payload: {
+    command?: string
+    framework?: string
+    packageManager?: string
+    previewScript?: string
+  }
+
+  try {
+    payload = JSON.parse(stdout) as typeof payload
+  } catch {
+    throw new Error(
+      `Could not parse the preview command suggestion: ${summarizeCommandOutput(stdout)}`,
+    )
+  }
+
+  if (!payload.command || !payload.packageManager || !payload.previewScript) {
+    throw new Error('The preview command suggestion was incomplete.')
+  }
+
+  return {
+    command: `cd ${quoteShellArg(args.workspacePath)} && ${payload.command}`,
+    framework: payload.framework ?? 'generic',
+    packageManager: payload.packageManager,
+    previewScript: payload.previewScript,
+    workspacePath: args.workspacePath,
+  }
 }
 
 export async function getSandboxAppPreviewLogTail(args: {
