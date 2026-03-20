@@ -197,51 +197,49 @@ function ProfileRoute() {
               </p>
             ) : null}
 
-            <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-              <div className="grid gap-3 md:grid-cols-3">
-                <div className="border-2 border-foreground bg-muted p-3">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                    Wallet available
-                  </p>
-                  <p className="mt-1 text-lg font-black">
-                    {formatUsdCents(billingSummary.wallet.availableUsdCents)}
-                  </p>
-                </div>
-                <div className="border-2 border-foreground bg-muted p-3">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                    Wallet held
-                  </p>
-                  <p className="mt-1 text-lg font-black">
-                    {formatUsdCents(billingSummary.wallet.heldUsdCents)}
-                  </p>
-                </div>
-                <div className="border-2 border-foreground bg-muted p-3">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                    Subscription
-                  </p>
-                  <p className="mt-1 text-sm font-black uppercase">
-                    {formatBillingPlanStatus(currentPlan?.status)}
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {formatBillingPlanPeriod(
-                      currentPlan?.period ?? undefined,
-                    ) ?? 'No billing period'}
-                  </p>
-                </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Wallet available
+                </p>
+                <p className="mt-1 text-lg font-black">
+                  {formatUsdCents(billingSummary.wallet.availableUsdCents)}
+                </p>
               </div>
-
-              <DelegatedBudgetManager
-                id="delegated-budget"
-                summary={delegatedBudget}
-                record={delegatedBudgetRecord}
-                health={delegatedBudgetHealth}
-                environment={pricingCatalog.environment}
-                onUpdated={refreshProfile}
-                onSelectRail={() => {
-                  setPaymentMethod('delegated_budget')
-                }}
-              />
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Wallet held
+                </p>
+                <p className="mt-1 text-lg font-black">
+                  {formatUsdCents(billingSummary.wallet.heldUsdCents)}
+                </p>
+              </div>
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Subscription
+                </p>
+                <p className="mt-1 text-sm font-black uppercase">
+                  {formatBillingPlanStatus(currentPlan?.status)}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {formatBillingPlanPeriod(
+                    currentPlan?.period ?? undefined,
+                  ) ?? 'No billing period'}
+                </p>
+              </div>
             </div>
+
+            <DelegatedBudgetManager
+              id="delegated-budget"
+              summary={delegatedBudget}
+              record={delegatedBudgetRecord}
+              health={delegatedBudgetHealth}
+              environment={pricingCatalog.environment}
+              onUpdated={refreshProfile}
+              onSelectRail={() => {
+                setPaymentMethod('delegated_budget')
+              }}
+            />
 
             <div className="flex flex-col gap-2">
               <p className="text-[10px] font-black uppercase tracking-widest">

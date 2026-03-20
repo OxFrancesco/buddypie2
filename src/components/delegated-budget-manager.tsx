@@ -488,33 +488,73 @@ export function DelegatedBudgetManager({
       ) : null}
 
       {hasActiveBudget && summary ? (
-        <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-          <p>
-            {summary.type === 'periodic'
-              ? `Periodic ${summary.interval ?? 'custom'} budget`
-              : 'Fixed budget'}
-          </p>
-          <p>Remaining: {formatUsdCents(summary.remainingAmountUsdCents ?? 0)}</p>
-          <p>
-            Configured: {formatUsdCents(summary.configuredAmountUsdCents ?? 0)}
-          </p>
-          <p>Network: {summary.network ?? environment.delegatedBudget.network}</p>
-          <p>Delegate: {summary.delegateAddress ?? 'Not assigned yet.'}</p>
-          {summary.periodEndsAt ? (
-            <p>Current period ends: {formatDateTime(summary.periodEndsAt)}</p>
-          ) : null}
-          {summary.lastSettlementAt ? (
-            <p>Last settlement: {formatDateTime(summary.lastSettlementAt)}</p>
-          ) : null}
+        <div className="mt-4 space-y-3">
+          <div className={cn('grid gap-3', compact ? 'grid-cols-1' : 'grid-cols-2')}>
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Type
+              </p>
+              <p className="mt-1 font-bold">
+                {summary.type === 'periodic'
+                  ? `Periodic · ${summary.interval ?? 'custom'}`
+                  : 'Fixed'}
+              </p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Remaining
+              </p>
+              <p className="mt-1 font-bold">
+                {formatUsdCents(summary.remainingAmountUsdCents ?? 0)}
+                <span className="ml-1 text-xs font-normal text-muted-foreground">
+                  / {formatUsdCents(summary.configuredAmountUsdCents ?? 0)}
+                </span>
+              </p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Network
+              </p>
+              <p className="mt-1 font-bold">{summary.network ?? environment.delegatedBudget.network}</p>
+            </div>
+            <div className="border-2 border-foreground bg-muted p-3">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                Delegate
+              </p>
+              <p className="mt-1 truncate font-bold" title={summary.delegateAddress ?? undefined}>
+                {summary.delegateAddress
+                  ? `${summary.delegateAddress.slice(0, 6)}…${summary.delegateAddress.slice(-4)}`
+                  : 'Not assigned'}
+              </p>
+            </div>
+            {summary.periodEndsAt ? (
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Period ends
+                </p>
+                <p className="mt-1 font-bold">{formatDateTime(summary.periodEndsAt)}</p>
+              </div>
+            ) : null}
+            {summary.lastSettlementAt ? (
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Last settlement
+                </p>
+                <p className="mt-1 font-bold">{formatDateTime(summary.lastSettlementAt)}</p>
+              </div>
+            ) : null}
+          </div>
+
           {needsReset ? (
-            <Alert variant="destructive" className="mt-3 border-2 border-foreground">
-              <AlertDescription>
+            <div className="border-2 border-foreground bg-destructive/10 p-3">
+              <p className="text-xs font-bold text-destructive">
                 {health?.message ??
                   'This delegated budget needs to be reset before it can be used again.'}
-              </AlertDescription>
-            </Alert>
+              </p>
+            </div>
           ) : null}
-          <div className="mt-3 flex gap-2">
+
+          <div className="flex gap-2 pt-1">
             {needsReset ? (
               <Button
                 type="button"
@@ -541,7 +581,7 @@ export function DelegatedBudgetManager({
           </div>
         </div>
       ) : (
-        <div className="mt-3 space-y-3">
+        <div className="mt-4 space-y-4">
           {!isConfigured ? (
             <p className="text-xs text-muted-foreground">
               Configure the delegated-budget treasury and backend delegate
@@ -549,60 +589,81 @@ export function DelegatedBudgetManager({
             </p>
           ) : (
             <>
-              <div className={cn('grid gap-3', compact ? 'grid-cols-1' : 'md:grid-cols-3')}>
-                <label className="flex flex-col gap-2 text-xs font-bold uppercase tracking-wide">
-                  Budget amount (USD)
-                  <Input
-                    value={amount}
-                    onChange={(event) => setAmount(event.target.value)}
-                    inputMode="decimal"
-                    placeholder="25"
-                  />
-                </label>
+              <div className={cn('grid gap-3', compact ? 'grid-cols-1' : 'grid-cols-2')}>
+                <div className="border-2 border-foreground bg-muted p-3">
+                  <label className="flex flex-col gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                      Budget amount (USD)
+                    </span>
+                    <Input
+                      value={amount}
+                      onChange={(event) => setAmount(event.target.value)}
+                      inputMode="decimal"
+                      placeholder="25"
+                      className="border-2 border-foreground bg-background font-bold"
+                    />
+                  </label>
+                </div>
 
-                <div className="flex flex-col gap-2 text-xs font-bold uppercase tracking-wide">
-                  Budget type
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
+                <div className="border-2 border-foreground bg-muted p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                    Budget type
+                  </p>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button
                       type="button"
-                      variant={budgetType === 'fixed' ? 'default' : 'outline'}
                       onClick={() => setBudgetType('fixed')}
-                      className="border-2 border-foreground text-xs font-bold uppercase"
+                      className={cn(
+                        'border-2 border-foreground px-3 py-1.5 text-xs font-black uppercase tracking-wide transition-all',
+                        budgetType === 'fixed'
+                          ? 'translate-x-[1px] translate-y-[1px] bg-foreground text-background'
+                          : 'bg-background hover:bg-accent',
+                      )}
                     >
                       Fixed
-                    </Button>
-                    <Button
+                    </button>
+                    <button
                       type="button"
-                      variant={budgetType === 'periodic' ? 'default' : 'outline'}
                       onClick={() => setBudgetType('periodic')}
-                      className="border-2 border-foreground text-xs font-bold uppercase"
+                      className={cn(
+                        'border-2 border-foreground px-3 py-1.5 text-xs font-black uppercase tracking-wide transition-all',
+                        budgetType === 'periodic'
+                          ? 'translate-x-[1px] translate-y-[1px] bg-foreground text-background'
+                          : 'bg-background hover:bg-accent',
+                      )}
                     >
                       Periodic
-                    </Button>
+                    </button>
                   </div>
                 </div>
 
                 {budgetType === 'periodic' ? (
-                  <div className="flex flex-col gap-2 text-xs font-bold uppercase tracking-wide">
-                    Interval
-                    <div className="grid grid-cols-3 gap-2">
+                  <div className="border-2 border-foreground bg-muted p-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                      Interval
+                    </p>
+                    <div className="mt-2 grid grid-cols-3 gap-2">
                       {(['day', 'week', 'month'] as const).map((option) => (
-                        <Button
+                        <button
                           key={option}
                           type="button"
-                          variant={interval === option ? 'default' : 'outline'}
                           onClick={() => setInterval(option)}
-                          className="border-2 border-foreground text-xs font-bold uppercase"
+                          className={cn(
+                            'border-2 border-foreground px-2 py-1.5 text-xs font-black uppercase tracking-wide transition-all',
+                            interval === option
+                              ? 'translate-x-[1px] translate-y-[1px] bg-foreground text-background'
+                              : 'bg-background hover:bg-accent',
+                          )}
                         >
                           {option}
-                        </Button>
+                        </button>
                       ))}
                     </div>
                   </div>
                 ) : null}
               </div>
 
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs leading-relaxed text-muted-foreground">
                 Setup stores a smart-account delegation with a treasury-bound USDC
                 spend limit so later agent spends can settle without repeated wallet
                 prompts. If your MetaMask smart account is still counterfactual on
@@ -615,7 +676,7 @@ export function DelegatedBudgetManager({
                 type="button"
                 onClick={handleCreateBudget}
                 disabled={isSubmitting}
-                className="border-2 border-foreground font-black uppercase shadow-[3px_3px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                className="w-full border-2 border-foreground bg-foreground font-black uppercase tracking-wider text-background shadow-[4px_4px_0_var(--accent)] transition-all hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none"
               >
                 {isSubmitting ? 'Preparing budget...' : 'Create delegated budget'}
               </Button>
