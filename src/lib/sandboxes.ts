@@ -5,6 +5,7 @@ import {
 } from '~/lib/opencode/presets'
 
 const MAX_INITIAL_PROMPT_LENGTH = 10_000
+const SANDBOX_WORK_BRANCH_PREFIX = 'codex'
 
 export type SandboxPaymentMethod = 'credits' | 'x402' | 'delegated_budget'
 
@@ -107,4 +108,33 @@ export function isGitHubRepo(repoUrl: string | URL) {
 export function getWorkspacePath(repoName: string) {
   const safeRepoName = repoName.replace(/[^a-zA-Z0-9._-]/g, '-')
   return `/home/daytona/${safeRepoName}`
+}
+
+function sanitizeGitBranchSegment(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, '-')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^-+|-+$/g, '')
+
+  return normalized
+    .split('/')
+    .map((segment) => segment.replace(/^[.-]+|[.-]+$/g, '').slice(0, 32))
+    .filter(Boolean)
+    .join('-')
+}
+
+export function buildSandboxWorkBranchName(args: {
+  repoName: string
+  baseBranch: string
+  nonce?: string
+}) {
+  const repoSegment = sanitizeGitBranchSegment(args.repoName) || 'repo'
+  const baseBranchSegment =
+    sanitizeGitBranchSegment(args.baseBranch) || 'default'
+  const nonce =
+    sanitizeGitBranchSegment(args.nonce ?? Date.now().toString(36)) || 'branch'
+
+  return `${SANDBOX_WORK_BRANCH_PREFIX}/${repoSegment}-${baseBranchSegment}-${nonce}`
 }

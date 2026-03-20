@@ -21,6 +21,7 @@ export default defineConfig({
     // please see https://tanstack.com/start/latest/docs/framework/react/guide/hosting#nitro for guides on hosting
     nitro({
       preset: 'vercel',
+      noExternals: ['tslib'],
     }),
   ],
   resolve: {

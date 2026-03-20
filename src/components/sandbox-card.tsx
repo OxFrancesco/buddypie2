@@ -100,7 +100,7 @@ export function SandboxCard({
         <div className="grid gap-3 lg:grid-cols-2">
           <div className="border-2 border-foreground bg-muted p-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-              Branch
+              Base Branch
             </p>
             <p className="mt-1 font-bold">{sandbox.repoBranch || 'default'}</p>
           </div>

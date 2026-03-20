@@ -51,6 +51,9 @@ Delivery workflow default behavior:
   agent prompt and instructions
 - those requirements tell the agent to use Bun for Node and TypeScript repo
   commands
+- BuddyPie also checks out a dedicated `codex/...` working branch before the
+  session starts, and the agent is expected to stay on that branch unless the
+  user explicitly asks to switch away from it
 - before handoff, the agent should run the relevant build command plus a
   dedicated typecheck command, or the closest validation command that covers
   types when no standalone typecheck exists

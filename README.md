@@ -84,6 +84,11 @@ instructions: use Bun for repo commands, run build and type validation before
 handoff, and push the current branch back to GitHub when sandbox auth is
 available so a PR can be opened from that branch.
 
+BuddyPie also clones the selected repository branch or the repo default branch,
+then immediately creates and checks out a dedicated `codex/...` working branch
+inside the sandbox before OpenCode starts. Agents should stay on that isolated
+working branch instead of switching back to the base branch.
+
 The `docs-writer` preset also performs a docs-specific workspace bootstrap
 before OpenCode starts:
 

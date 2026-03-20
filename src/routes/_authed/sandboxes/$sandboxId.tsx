@@ -808,7 +808,7 @@ function SandboxDetailRoute() {
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <div className="border-2 border-foreground bg-muted p-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Branch
+                  Base Branch
                 </p>
                 <p className="mt-1 font-bold">
                   {sandbox.repoBranch || 'default'}
@@ -934,7 +934,7 @@ function SandboxDetailRoute() {
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="border-2 border-foreground bg-muted p-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Branch
+                Base Branch
               </p>
               <p className="mt-1 font-bold">
                 {sandbox.repoBranch || 'default'}

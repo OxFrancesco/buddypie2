@@ -19,7 +19,11 @@ import {
   type DocsAppPathInspection,
   type WorkspaceBootstrapRuntimeContext,
 } from '~/lib/opencode/workspace-bootstrap'
-import { getWorkspacePath, normalizeSandboxInput } from '~/lib/sandboxes'
+import {
+  buildSandboxWorkBranchName,
+  getWorkspacePath,
+  normalizeSandboxInput,
+} from '~/lib/sandboxes'
 
 const OPENCODE_PORT = 3000
 const OPENCODE_VERSION = '1.2.26'
@@ -61,12 +65,21 @@ type WorkspaceBootstrapResult = {
   runtimeContext?: WorkspaceBootstrapRuntimeContext
 }
 
+type RepositoryRuntimeContext = {
+  baseBranch: string
+  workBranch: string
+}
+
 type ResolvedOpenCodeLaunchConfig = {
   preset: OpenCodeAgentPreset
   launchEnvironment: LaunchEnvironment
 }
 
 const SEEDED_SESSION_PAYLOAD_MARKER = '__BUDDYPIE_SEEDED_SESSION__'
+type SandboxGitClient = Pick<
+  Sandbox['git'],
+  'checkoutBranch' | 'clone' | 'createBranch' | 'deleteBranch' | 'status'
+>
 
 function injectEnvVar(name: string, content: string) {
   const base64 = Buffer.from(content).toString('base64')
@@ -449,23 +462,64 @@ function parseJsonCommandOutput<T>(response: ExecuteCommandResponse) {
 function buildManagedInstructionsContent(
   preset: OpenCodeAgentPreset,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
+  repositoryContext?: RepositoryRuntimeContext,
 ) {
   const runtimeInstructions =
     buildWorkspaceBootstrapInstructions(runtimeContext)
-  return runtimeInstructions
-    ? `${preset.instructionsMd}\n\n${runtimeInstructions}`
-    : preset.instructionsMd
+  const repositoryInstructions =
+    buildRepositoryRuntimeInstructions(repositoryContext)
+
+  return [preset.instructionsMd, runtimeInstructions, repositoryInstructions]
+    .filter(Boolean)
+    .join('\n\n')
 }
 
 function buildInitialPromptContent(
   initialPrompt: string,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
+  repositoryContext?: RepositoryRuntimeContext,
 ) {
   const runtimePromptPrefix =
     buildWorkspaceBootstrapPromptPrefix(runtimeContext)
-  return runtimePromptPrefix
-    ? `${runtimePromptPrefix}\n\n${initialPrompt}`
-    : initialPrompt
+  const repositoryPromptPrefix =
+    buildRepositoryRuntimePromptPrefix(repositoryContext)
+
+  return [runtimePromptPrefix, repositoryPromptPrefix, initialPrompt]
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+function buildRepositoryRuntimeInstructions(
+  context?: RepositoryRuntimeContext,
+) {
+  if (!context) {
+    return ''
+  }
+
+  return [
+    '## Runtime Git Context',
+    '',
+    '- BuddyPie cloned the repository and immediately moved this sandbox onto a dedicated working branch.',
+    `- Base branch: \`${context.baseBranch}\``,
+    `- Dedicated working branch: \`${context.workBranch}\``,
+    '',
+    'Stay on the dedicated working branch. Do not checkout the base branch or push directly to it.',
+  ].join('\n')
+}
+
+function buildRepositoryRuntimePromptPrefix(context?: RepositoryRuntimeContext) {
+  if (!context) {
+    return ''
+  }
+
+  return [
+    'BuddyPie already isolated this repository onto a dedicated working branch before the first prompt.',
+    '',
+    `- Base branch: \`${context.baseBranch}\``,
+    `- Dedicated working branch: \`${context.workBranch}\``,
+    '',
+    'Stay on the dedicated working branch. Do not switch back to the base branch unless the user explicitly asks.',
+  ].join('\n')
 }
 
 function buildSkillPermissions(
@@ -890,6 +944,7 @@ async function writeManagedWorkspaceFiles(
   workspacePath: string,
   preset: OpenCodeAgentPreset,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
+  repositoryContext?: RepositoryRuntimeContext,
 ) {
   const instructionsPath = pathPosix.join(
     workspacePath,
@@ -898,7 +953,11 @@ async function writeManagedWorkspaceFiles(
   await uploadTextFile(
     sandbox,
     instructionsPath,
-    buildManagedInstructionsContent(preset, runtimeContext),
+    buildManagedInstructionsContent(
+      preset,
+      runtimeContext,
+      repositoryContext,
+    ),
   )
 
   for (const skill of preset.skills) {
@@ -958,10 +1017,55 @@ async function cloneRepository(args: {
     throw error
   }
 
+  const repositoryContext = await isolateSandboxGitBranch({
+    git: args.sandbox.git,
+    workspacePath,
+    repoName: normalized.repoName,
+  })
+
   return {
     ...normalized,
     workspacePath,
+    repositoryContext,
   }
+}
+
+export async function isolateSandboxGitBranch(args: {
+  git: SandboxGitClient
+  workspacePath: string
+  repoName: string
+}) {
+  const initialStatus = await args.git.status(args.workspacePath)
+  const baseBranch = initialStatus.currentBranch?.trim()
+
+  if (!baseBranch) {
+    throw new Error(
+      'Daytona cloned the repository without a current branch, so BuddyPie could not isolate a dedicated work branch.',
+    )
+  }
+
+  const workBranch = buildSandboxWorkBranchName({
+    repoName: args.repoName,
+    baseBranch,
+  })
+
+  await args.git.createBranch(args.workspacePath, workBranch)
+  await args.git.checkoutBranch(args.workspacePath, workBranch)
+
+  const isolatedStatus = await args.git.status(args.workspacePath)
+
+  if (isolatedStatus.currentBranch !== workBranch) {
+    throw new Error(
+      `BuddyPie expected the isolated branch '${workBranch}', but Daytona reported '${isolatedStatus.currentBranch}'.`,
+    )
+  }
+
+  await args.git.deleteBranch(args.workspacePath, baseBranch)
+
+  return {
+    baseBranch,
+    workBranch,
+  } satisfies RepositoryRuntimeContext
 }
 
 async function configureGitHubAuthForSandbox(args: {
@@ -1243,6 +1347,7 @@ export async function createOpenCodeSandbox(args: {
     const seededInitialPrompt = buildInitialPromptContent(
       repo.initialPrompt,
       workspaceBootstrap.runtimeContext,
+      repo.repositoryContext,
     )
 
     await writeManagedWorkspaceFiles(
@@ -1250,6 +1355,7 @@ export async function createOpenCodeSandbox(args: {
       repo.workspacePath,
       preset,
       workspaceBootstrap.runtimeContext,
+      repo.repositoryContext,
     )
     await sandbox.process.executeCommand(
       `npm i -g opencode-ai@${OPENCODE_VERSION}`,

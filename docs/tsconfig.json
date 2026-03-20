@@ -1,5 +1,12 @@
 {
-  "include": ["**/*.ts", "**/*.tsx"],
+  "include": [
+    ".source/**/*.ts",
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "source.config.ts",
+    "vite.config.ts"
+  ],
+  "exclude": ["daytona", "guides", ".vercel", ".output", "node_modules"],
   "compilerOptions": {
     "strict": true,
     "esModuleInterop": true,

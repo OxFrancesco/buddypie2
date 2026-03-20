@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   buildOpenCodeSessionPreviewUrl,
+  isolateSandboxGitBranch,
   resolveOpenCodeLaunchConfig,
 } from '../src/lib/server/daytona.ts'
+import { buildSandboxWorkBranchName } from '../src/lib/sandboxes.ts'
 
 const ORIGINAL_ENV = { ...process.env }
 
@@ -117,5 +119,63 @@ describe('buildOpenCodeSessionPreviewUrl', () => {
         '/home/daytona/example-repo',
       ),
     ).toBe('https://3000-sandbox.proxy.daytona.works/')
+  })
+})
+
+describe('isolateSandboxGitBranch', () => {
+  test('creates, checks out, and retains a dedicated working branch instead of the cloned base branch', async () => {
+    const operations = []
+    let currentBranch = 'main'
+    const git = {
+      async clone() {
+        throw new Error('clone should not be called during branch isolation')
+      },
+      async status() {
+        return {
+          currentBranch,
+          ahead: 0,
+          behind: 0,
+          branchPublished: false,
+          fileStatus: [],
+        }
+      },
+      async createBranch(path, name) {
+        operations.push(['createBranch', path, name])
+      },
+      async checkoutBranch(path, branch) {
+        operations.push(['checkoutBranch', path, branch])
+        currentBranch = branch
+      },
+      async deleteBranch(path, name) {
+        operations.push(['deleteBranch', path, name])
+      },
+    }
+
+    const originalNow = Date.now
+    Date.now = () => 9337286
+
+    try {
+      const workBranch = buildSandboxWorkBranchName({
+        repoName: 'buddy-pie',
+        baseBranch: 'main',
+      })
+      const result = await isolateSandboxGitBranch({
+        git,
+        workspacePath: '/home/daytona/buddy-pie',
+        repoName: 'buddy-pie',
+      })
+
+      expect(result).toEqual({
+        baseBranch: 'main',
+        workBranch,
+      })
+      expect(operations).toEqual([
+        ['createBranch', '/home/daytona/buddy-pie', workBranch],
+        ['checkoutBranch', '/home/daytona/buddy-pie', workBranch],
+        ['deleteBranch', '/home/daytona/buddy-pie', 'main'],
+      ])
+    } finally {
+      Date.now = originalNow
+    }
   })
 })

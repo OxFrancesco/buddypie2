@@ -459,7 +459,7 @@ function DashboardRoute() {
                   htmlFor="branch"
                   className="text-[10px] font-black uppercase tracking-widest"
                 >
-                  Branch
+                  Base Branch
                 </label>
                 <Input
                   id="branch"
@@ -482,7 +482,9 @@ function DashboardRoute() {
                     ? 'Fetching branches...'
                     : selectedGithubRepoFullName && githubBranches.length > 0
                       ? `${githubBranches.length} branch${githubBranches.length === 1 ? '' : 'es'} from ${selectedGithubRepoFullName}.`
-                      : 'Leave blank for the default branch.'}
+                      : 'Leave blank for the default branch.'}{' '}
+                  BuddyPie clones this branch, then immediately creates a
+                  dedicated working branch for the agent.
                 </p>
               </div>
 

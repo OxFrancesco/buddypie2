@@ -13,7 +13,9 @@ intentionally changing and the docs above are updated with it.
 
 Preset delivery workflow defaults matter too: every shipping preset currently
 injects shared delivery requirements into the managed agent instructions. Those
-defaults require Bun for Node and TypeScript repo commands, build plus type
-validation before handoff, and a branch push when GitHub auth is available in
-the sandbox. If that behavior changes, update `models.md`, `README.md`, and
-this file in the same change.
+defaults require Bun for Node and TypeScript repo commands, staying on the
+dedicated `codex/...` working branch BuddyPie creates before the session
+starts unless the user explicitly asks otherwise, build plus type validation
+before handoff, and a branch push when GitHub auth is available in the
+sandbox. If that behavior changes, update `models.md`, `README.md`, and this
+file in the same change.
