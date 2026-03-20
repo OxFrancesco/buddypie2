@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   getOpenCodeAgentPreset,
   getOpenCodeModelOptionByProviderAndModel,
+  openCodeAgentPresets,
   resolveOpenCodeModelOption,
 } from '../src/lib/opencode/presets.ts'
 
@@ -66,5 +67,16 @@ describe('preset model defaults', () => {
     expect(getOpenCodeAgentPreset('general-engineer').starterPrompt.trim()).not.toBe(
       '',
     )
+  })
+
+  test('adds the shared delivery workflow to every preset prompt and instructions', () => {
+    for (const preset of openCodeAgentPresets) {
+      expect(preset.agentPrompt).toContain('run the relevant build command')
+      expect(preset.agentPrompt).toContain('run the relevant typecheck command')
+      expect(preset.agentPrompt).toContain('push the current branch')
+      expect(preset.instructionsMd).toContain('## Required Delivery Workflow')
+      expect(preset.instructionsMd).toContain('Use Bun for Node and TypeScript repo commands')
+      expect(preset.instructionsMd).toContain('push the current branch')
+    }
   })
 })

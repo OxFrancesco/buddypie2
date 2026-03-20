@@ -29,6 +29,14 @@ type GithubApiBranch = {
   name: string
 }
 
+type GithubLaunchAuth = {
+  token: string
+  scopes: Array<string>
+  accountLogin?: string
+  accountName?: string
+  accountEmail?: string
+}
+
 type LaunchedSandbox = {
   daytonaSandboxId: string
   previewUrl: string
@@ -50,7 +58,10 @@ async function requireDelegatedBudgetAllowance(args: {
   actionLabel: string
 }): Promise<Doc<'delegatedBudgets'>> {
   const { convex } = await getAuthenticatedConvexClient()
-  const delegatedBudget = await convex.query(api.billing.currentDelegatedBudget, {})
+  const delegatedBudget = await convex.query(
+    api.billing.currentDelegatedBudget,
+    {},
+  )
 
   if (!delegatedBudget) {
     throw new Error(
@@ -67,21 +78,114 @@ async function requireDelegatedBudgetAllowance(args: {
   return delegatedBudget
 }
 
-async function getGithubAccessToken(userId: string) {
-  const { clerkClient } = await import('@clerk/tanstack-react-start/server')
-  const client = await clerkClient()
-  const tokens = await client.users.getUserOauthAccessToken(userId, 'github')
-  return tokens.data[0]?.token ?? null
+function normalizeGithubScopes(scopes?: Array<string> | string | null) {
+  const rawScopes = Array.isArray(scopes)
+    ? scopes
+    : typeof scopes === 'string'
+      ? scopes.split(/[,\s]+/)
+      : []
+
+  return Array.from(
+    new Set(
+      rawScopes
+        .map((scope) => scope.trim())
+        .filter((scope) => scope.length > 0),
+    ),
+  ).sort((left, right) => left.localeCompare(right))
 }
 
-async function getRequiredGithubAccessToken(userId: string) {
-  const githubToken = await getGithubAccessToken(userId)
+function isGithubAccountProvider(provider?: string | null) {
+  return provider === 'github' || provider === 'oauth_github'
+}
 
-  if (!githubToken) {
+async function getGithubLaunchAuth(
+  userId: string,
+): Promise<GithubLaunchAuth | null> {
+  const { clerkClient } = await import('@clerk/tanstack-react-start/server')
+  const client = await clerkClient()
+  const [tokens, clerkUser] = await Promise.all([
+    client.users.getUserOauthAccessToken(userId, 'github'),
+    client.users.getUser(userId),
+  ])
+  const accessToken = tokens.data[0]
+  const externalAccounts = clerkUser.externalAccounts ?? []
+  const githubAccount =
+    externalAccounts.find(
+      (account) =>
+        account.id === accessToken?.externalAccountId &&
+        isGithubAccountProvider(account.provider),
+    ) ??
+    externalAccounts.find((account) =>
+      isGithubAccountProvider(account.provider),
+    ) ??
+    null
+
+  if (!accessToken?.token) {
+    return null
+  }
+
+  const accountName =
+    [githubAccount?.firstName, githubAccount?.lastName]
+      .filter(Boolean)
+      .join(' ')
+      .trim() ||
+    githubAccount?.username ||
+    clerkUser.fullName ||
+    clerkUser.username ||
+    undefined
+  const accountEmail =
+    githubAccount?.emailAddress ||
+    clerkUser.primaryEmailAddress?.emailAddress ||
+    undefined
+
+  return {
+    token: accessToken.token,
+    scopes: normalizeGithubScopes([
+      ...normalizeGithubScopes(accessToken.scopes),
+      ...normalizeGithubScopes(githubAccount?.approvedScopes),
+    ]),
+    ...(githubAccount?.username
+      ? { accountLogin: githubAccount.username }
+      : {}),
+    ...(accountName ? { accountName } : {}),
+    ...(accountEmail ? { accountEmail } : {}),
+  }
+}
+
+function hasGithubRepoScope(scopes: Array<string>) {
+  return scopes.includes('repo')
+}
+
+function buildGithubConnectionMessage(auth: GithubLaunchAuth | null) {
+  if (!auth?.token) {
+    return 'Connect GitHub from your Clerk profile to import private repositories and let the agent push PRs.'
+  }
+
+  const accountLabel = auth.accountLogin
+    ? `@${auth.accountLogin}`
+    : 'your GitHub account'
+
+  if (!hasGithubRepoScope(auth.scopes)) {
+    return `${accountLabel} is connected in Clerk, but the GitHub repo scope is missing. Reconnect GitHub from your Clerk profile and approve repo access before asking the agent to push branches or PRs.`
+  }
+
+  return `${accountLabel} is connected with repo scope and ready for private repository imports and PR pushes.`
+}
+
+async function getRequiredGithubLaunchAuth(userId: string) {
+  const githubAuth = await getGithubLaunchAuth(userId)
+
+  if (!githubAuth?.token) {
     throw new Error('Connect GitHub in Clerk before fetching repositories.')
   }
 
-  return githubToken
+  if (!hasGithubRepoScope(githubAuth.scopes)) {
+    throw new Error(
+      'GitHub is connected, but repo scope is missing. Reconnect GitHub in Clerk and approve repo access before continuing.',
+    )
+  }
+
+  return githubAuth
 }
 
 async function githubRequest<T>(githubToken: string, path: string) {
@@ -364,18 +468,17 @@ async function launchSandboxLifecycle(args: {
       })
     }
 
-    const githubToken =
+    const githubAuth =
       args.normalized.repoProvider === 'github'
-        ? await getGithubAccessToken(userId)
+        ? await getGithubLaunchAuth(userId)
         : null
-    const { createOpenCodeSandbox, resolveOpenCodeLaunchConfig } = await import(
-      '~/lib/server/daytona'
-    )
+    const { createOpenCodeSandbox, resolveOpenCodeLaunchConfig } =
+      await import('~/lib/server/daytona')
     resolveOpenCodeLaunchConfig({
       agentPresetId: args.normalized.agentPresetId,
       agentProvider: args.normalized.agentProvider,
       agentModel: args.normalized.agentModel,
-      githubToken,
+      githubAuth,
     })
     pendingSandbox = await convex.mutation(api.sandboxes.createPending, {
       repoUrl: args.normalized.repoUrl,
@@ -396,7 +499,7 @@ async function launchSandboxLifecycle(args: {
       agentProvider: args.normalized.agentProvider,
       agentModel: args.normalized.agentModel,
       initialPrompt: args.normalized.initialPrompt,
-      githubToken,
+      githubAuth,
     })
 
     if (args.paymentMethod === 'delegated_budget') {
@@ -474,9 +577,9 @@ async function restartSandboxLifecycle(args: {
       })
     }
 
-    const githubToken =
+    const githubAuth =
       sandbox.repoProvider === 'github'
-        ? await getGithubAccessToken(userId)
+        ? await getGithubLaunchAuth(userId)
         : null
     const {
       createOpenCodeSandbox,
@@ -487,7 +590,7 @@ async function restartSandboxLifecycle(args: {
       agentPresetId: restartPreset.agentPresetId,
       agentProvider: restartPreset.agentProvider,
       agentModel: restartPreset.agentModel,
-      githubToken,
+      githubAuth,
     })
     pendingSandbox = await convex.mutation(api.sandboxes.createPending, {
       repoUrl: sandbox.repoUrl,
@@ -508,7 +611,7 @@ async function restartSandboxLifecycle(args: {
       agentProvider: restartPreset.agentProvider,
       agentModel: restartPreset.agentModel,
       initialPrompt: restartPreset.initialPrompt,
-      githubToken,
+      githubAuth,
     })
 
     if (args.paymentMethod === 'delegated_budget') {
@@ -578,20 +681,20 @@ async function fetchGithubRepos(githubToken: string) {
 
 export async function checkGithubConnectionRuntime() {
   const { userId } = await getAuthenticatedConvexClient()
-  const githubToken = await getGithubAccessToken(userId)
+  const githubAuth = await getGithubLaunchAuth(userId)
 
   return {
-    connected: Boolean(githubToken),
-    message: githubToken
-      ? 'GitHub is connected and ready for private repository imports.'
-      : 'Connect GitHub from your Clerk profile to import private repositories.',
+    connected: githubAuth ? hasGithubRepoScope(githubAuth.scopes) : false,
+    accountLogin: githubAuth?.accountLogin ?? null,
+    scopes: githubAuth?.scopes ?? [],
+    message: buildGithubConnectionMessage(githubAuth),
   }
 }
 
 export async function listGithubReposRuntime() {
   const { userId } = await getAuthenticatedConvexClient()
-  const githubToken = await getRequiredGithubAccessToken(userId)
-  const repos = await fetchGithubRepos(githubToken)
+  const githubAuth = await getRequiredGithubLaunchAuth(userId)
+  const repos = await fetchGithubRepos(githubAuth.token)
 
   return repos.map((repo) => ({
     id: repo.id,
@@ -607,13 +710,15 @@ export async function listGithubBranchesRuntime(repoFullName: string) {
   const [owner, repo, ...rest] = normalizedRepoFullName.split('/')
 
   if (!owner || !repo || rest.length > 0) {
-    throw new Error('Choose a valid GitHub repository before fetching branches.')
+    throw new Error(
+      'Choose a valid GitHub repository before fetching branches.',
+    )
   }
 
   const { userId } = await getAuthenticatedConvexClient()
-  const githubToken = await getRequiredGithubAccessToken(userId)
+  const githubAuth = await getRequiredGithubLaunchAuth(userId)
   const branches = await githubRequest<Array<GithubApiBranch>>(
-    githubToken,
+    githubAuth.token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`,
   )
 

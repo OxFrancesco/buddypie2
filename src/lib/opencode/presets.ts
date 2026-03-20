@@ -55,6 +55,27 @@ type OpenCodeAgentPresetDefinition = {
   workspaceBootstrap?: OpenCodeWorkspaceBootstrap
 }
 
+const sharedDeliveryAgentPrompt =
+  'Use Bun for Node and TypeScript repo commands. Before handoff, run the relevant build command, run the relevant typecheck command or the closest repo validation that covers types, fix any failures introduced by your work, and when GitHub auth is available in the sandbox, commit and push the current branch so a PR can be opened from that branch.'
+
+const sharedDeliveryInstructionsMd = `
+## Required Delivery Workflow
+
+- Use Bun for Node and TypeScript repo commands in this workspace.
+- Before handoff, run the relevant build command for the repo or affected package.
+- Run the relevant typecheck command for the repo or affected package. If there is no dedicated typecheck script, run the closest repo validation command that covers types.
+- Fix any failures introduced by your changes before handing work back.
+- When GitHub auth is available in the sandbox, commit and push the current branch so a PR can be opened from that branch.
+`.trim()
+
+function withSharedDeliveryPrompt(prompt: string) {
+  return `${prompt} ${sharedDeliveryAgentPrompt}`
+}
+
+function withSharedDeliveryInstructions(instructionsMd: string) {
+  return `${instructionsMd.trim()}\n\n${sharedDeliveryInstructionsMd}`
+}
+
 const openCodeModelOptionMap = {
   'openrouter-minimax-m2.7': {
     id: 'openrouter-minimax-m2.7',
@@ -112,9 +133,10 @@ const openCodePresetMap = {
     provider: 'openrouter',
     model: 'minimax/minimax-m2.7',
     requiredEnv: ['OPENROUTER_API_KEY'],
-    agentPrompt:
+    agentPrompt: withSharedDeliveryPrompt(
       'Act as a pragmatic software engineer who starts with the smallest high-confidence plan, keeps changes scoped, and verifies important behavior before handing work back.',
-    instructionsMd: `
+    ),
+    instructionsMd: withSharedDeliveryInstructions(`
 # BuddyPie General Engineer
 
 This sandbox was launched from BuddyPie with the general-purpose engineering preset.
@@ -137,7 +159,7 @@ This sandbox was launched from BuddyPie with the general-purpose engineering pre
 
 - \`buddypie-general-architecture\` for repo walkthroughs, system mapping, and change planning.
 - \`buddypie-general-release-check\` before final verification and handoff.
-`.trim(),
+`.trim()),
     starterPrompt:
       'Inspect this repository, identify the files and systems relevant to the requested task, and start with the smallest high-confidence plan before editing. Then implement the change, verify the behavior you touched, and summarize the result with any remaining risks or follow-up work.',
     starterPromptPlaceholder:
@@ -201,9 +223,10 @@ Use this near the end of implementation before reporting completion back to the 
     provider: 'openrouter',
     model: 'minimax/minimax-m2.7',
     requiredEnv: ['OPENROUTER_API_KEY'],
-    agentPrompt:
+    agentPrompt: withSharedDeliveryPrompt(
       'Act as a frontend specialist. Optimize for UI clarity, responsive behavior, accessibility, and design-system consistency while keeping implementation grounded in the existing product.',
-    instructionsMd: `
+    ),
+    instructionsMd: withSharedDeliveryInstructions(`
 # BuddyPie Frontend Builder
 
 This sandbox was launched with BuddyPie's frontend preset.
@@ -226,7 +249,7 @@ This sandbox was launched with BuddyPie's frontend preset.
 
 - \`buddypie-frontend-component-craft\` for component architecture, state, and composability.
 - \`buddypie-frontend-ui-polish\` for layout polish, responsive behavior, and accessibility review.
-`.trim(),
+`.trim()),
     starterPrompt:
       'Audit the relevant UI surfaces in this repository, identify the files that control the experience, and propose the smallest high-confidence frontend plan before editing.',
     starterPromptPlaceholder:
@@ -290,9 +313,10 @@ Use this after implementing UI changes and before reporting the result.
     provider: 'venice',
     model: 'zai-org-glm-5',
     requiredEnv: ['VENICE_API_KEY'],
-    agentPrompt:
+    agentPrompt: withSharedDeliveryPrompt(
       'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior. When BuddyPie prepares a Fumadocs docs app, use the product repo for project truth and the Fumadocs reference repo for framework truth.',
-    instructionsMd: `
+    ),
+    instructionsMd: withSharedDeliveryInstructions(`
 # BuddyPie Docs Writer
 
 This sandbox was launched with BuddyPie's documentation preset.
@@ -325,7 +349,7 @@ This sandbox was launched with BuddyPie's documentation preset.
 
 - \`buddypie-docs-structure\` for README, guide, and architecture-document planning.
 - \`buddypie-docs-qa\` for factual verification and editorial cleanup before handoff.
-`.trim(),
+`.trim()),
     starterPrompt:
       'Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project. Cover the docs landing page, getting started and local setup, architecture and major subsystems, environment and configuration, development workflow, deployment or operations, and any API or integration docs that the codebase supports. Outline the structure before editing, then write or update the docs app content using the prepared Fumadocs workspace.',
     starterPromptPlaceholder:

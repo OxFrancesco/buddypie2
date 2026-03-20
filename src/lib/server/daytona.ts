@@ -39,6 +39,14 @@ const SHARED_ENV_FALLBACKS: Record<string, Array<string>> = {
 
 type LaunchEnvironment = Record<string, string>
 
+type GitHubLaunchAuth = {
+  token: string
+  scopes: Array<string>
+  accountLogin?: string
+  accountName?: string
+  accountEmail?: string
+}
+
 type ExecuteCommandResponse = {
   artifacts?: {
     stdout?: string
@@ -535,7 +543,7 @@ function buildOpenCodeConfig(
 
 function buildLaunchEnvironment(
   preset: OpenCodeAgentPreset,
-  githubToken?: string | null,
+  githubAuth?: GitHubLaunchAuth | null,
 ): LaunchEnvironment {
   const environment: LaunchEnvironment = {}
 
@@ -557,8 +565,18 @@ function buildLaunchEnvironment(
     }
   }
 
-  if (githubToken) {
-    environment.GITHUB_TOKEN = githubToken
+  if (githubAuth?.token) {
+    environment.GITHUB_TOKEN = githubAuth.token
+    environment.GH_TOKEN = githubAuth.token
+
+    if (githubAuth.scopes.length > 0) {
+      environment.GITHUB_OAUTH_SCOPES = githubAuth.scopes.join(',')
+    }
+
+    if (githubAuth.accountLogin) {
+      environment.GITHUB_OAUTH_ACCOUNT_LOGIN = githubAuth.accountLogin
+      environment.GITHUB_ACTOR = githubAuth.accountLogin
+    }
   }
 
   return environment
@@ -568,7 +586,7 @@ export function resolveOpenCodeLaunchConfig(args: {
   agentPresetId: string
   agentProvider?: string
   agentModel?: string
-  githubToken?: string | null
+  githubAuth?: GitHubLaunchAuth | null
 }): ResolvedOpenCodeLaunchConfig {
   const presetDefaults = getOpenCodeAgentPreset(args.agentPresetId)
   const modelOption = resolveOpenCodeModelOption({
@@ -581,7 +599,7 @@ export function resolveOpenCodeLaunchConfig(args: {
 
   return {
     preset,
-    launchEnvironment: buildLaunchEnvironment(preset, args.githubToken),
+    launchEnvironment: buildLaunchEnvironment(preset, args.githubAuth),
   }
 }
 
@@ -903,7 +921,7 @@ async function cloneRepository(args: {
   branch?: string
   agentPresetId: OpenCodeAgentPresetId
   initialPrompt?: string
-  githubToken?: string | null
+  githubAuth?: GitHubLaunchAuth | null
 }) {
   const normalized = normalizeSandboxInput({
     repoUrl: args.repoUrl,
@@ -914,14 +932,14 @@ async function cloneRepository(args: {
   const workspacePath = getWorkspacePath(normalized.repoName)
 
   try {
-    if (normalized.repoProvider === 'github' && args.githubToken) {
+    if (normalized.repoProvider === 'github' && args.githubAuth?.token) {
       await args.sandbox.git.clone(
         normalized.repoUrl,
         workspacePath,
         normalized.branch,
         undefined,
         'git',
-        args.githubToken,
+        args.githubAuth.token,
       )
     } else {
       await args.sandbox.git.clone(
@@ -931,7 +949,7 @@ async function cloneRepository(args: {
       )
     }
   } catch (error) {
-    if (normalized.repoProvider === 'github' && !args.githubToken) {
+    if (normalized.repoProvider === 'github' && !args.githubAuth?.token) {
       throw new Error(
         'Cloning the repository failed. If it is private, connect GitHub in Clerk and grant repo access before retrying.',
       )
@@ -944,6 +962,47 @@ async function cloneRepository(args: {
     ...normalized,
     workspacePath,
   }
+}
+
+async function configureGitHubAuthForSandbox(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  githubAuth?: GitHubLaunchAuth | null
+}) {
+  if (!args.githubAuth?.token) {
+    return
+  }
+
+  const credentialHelper =
+    '!f() { if [ "$1" = get ]; then echo "username=x-access-token"; echo "password=$GITHUB_TOKEN"; fi; }; f'
+  const commands = [
+    `git config --local credential.https://github.com.helper ${quoteShellArg(credentialHelper)}`,
+  ]
+
+  if (args.githubAuth.accountLogin) {
+    commands.push(
+      `git config --local github.user ${quoteShellArg(args.githubAuth.accountLogin)}`,
+    )
+  }
+
+  if (args.githubAuth.accountName) {
+    commands.push(
+      `git config --local user.name ${quoteShellArg(args.githubAuth.accountName)}`,
+    )
+  }
+
+  if (args.githubAuth.accountEmail) {
+    commands.push(
+      `git config --local user.email ${quoteShellArg(args.githubAuth.accountEmail)}`,
+    )
+  }
+
+  await args.sandbox.process.executeCommand(
+    commands.join(' && '),
+    args.workspacePath,
+    undefined,
+    30,
+  )
 }
 
 async function startOpencodeWeb(args: {
@@ -1143,7 +1202,7 @@ export async function createOpenCodeSandbox(args: {
   agentProvider?: string
   agentModel?: string
   initialPrompt?: string
-  githubToken?: string | null
+  githubAuth?: GitHubLaunchAuth | null
 }) {
   const daytona = new Daytona({
     apiKey: getRequiredDaytonaApiKey(),
@@ -1153,7 +1212,7 @@ export async function createOpenCodeSandbox(args: {
     agentPresetId: args.agentPresetId,
     agentProvider: args.agentProvider,
     agentModel: args.agentModel,
-    githubToken: args.githubToken,
+    githubAuth: args.githubAuth,
   })
   let sandbox: Sandbox | undefined
 
@@ -1169,7 +1228,12 @@ export async function createOpenCodeSandbox(args: {
       branch: args.branch,
       agentPresetId: preset.id,
       initialPrompt: args.initialPrompt,
-      githubToken: args.githubToken,
+      githubAuth: args.githubAuth,
+    })
+    await configureGitHubAuthForSandbox({
+      sandbox,
+      workspacePath: repo.workspacePath,
+      githubAuth: args.githubAuth,
     })
     const workspaceBootstrap = await bootstrapWorkspace({
       sandbox,

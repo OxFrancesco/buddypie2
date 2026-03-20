@@ -66,6 +66,35 @@ describe('resolveOpenCodeLaunchConfig', () => {
       },
     })
   })
+
+  test('injects the GitHub token aliases and account login needed for PR flows', () => {
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key'
+
+    const { launchEnvironment } = resolveOpenCodeLaunchConfig({
+      agentPresetId: 'general-engineer',
+      agentProvider: 'openrouter',
+      agentModel: 'minimax/minimax-m2.7',
+      githubAuth: {
+        token: 'ghu_test_token',
+        scopes: ['repo', 'read:user'],
+        accountLogin: 'octocat',
+        accountName: 'The Octocat',
+        accountEmail: 'octocat@example.com',
+      },
+    })
+
+    expect(launchEnvironment).toMatchObject({
+      OPENROUTER_API_KEY: 'test-openrouter-key',
+      GITHUB_TOKEN: 'ghu_test_token',
+      GH_TOKEN: 'ghu_test_token',
+      GITHUB_OAUTH_SCOPES: 'repo,read:user',
+      GITHUB_OAUTH_ACCOUNT_LOGIN: 'octocat',
+      GITHUB_ACTOR: 'octocat',
+    })
+    expect(launchEnvironment.GITHUB_OAUTH_ACCOUNT_EMAIL).toBeUndefined()
+    expect(launchEnvironment.GITHUB_OAUTH_ACCOUNT_NAME).toBeUndefined()
+    expect(launchEnvironment.GITHUB_OAUTH_ACCOUNT_ID).toBeUndefined()
+  })
 })
 
 describe('buildOpenCodeSessionPreviewUrl', () => {

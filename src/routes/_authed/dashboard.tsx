@@ -417,34 +417,39 @@ function DashboardRoute() {
                 />
 
                 {github.connected ? (
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        void handleRefreshGithubRepos()
-                      }}
-                      disabled={isRefreshingGithubRepos}
-                      className="border-2 border-foreground text-xs font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
-                    >
-                      {isLoadingGithubRepos
-                        ? 'Fetching latest repos...'
-                        : isRefreshingGithubRepos
-                          ? 'Refreshing...'
-                          : 'Refresh repos'}
-                    </Button>
+                  <div className="flex flex-col gap-2">
                     <p className="text-xs text-muted-foreground">
-                      {isLoadingGithubRepos
-                        ? 'Loading your latest 10 repos.'
-                        : githubRepos.length > 0
-                          ? `${githubRepos.length} recent repo${githubRepos.length === 1 ? '' : 's'} cached until refresh.`
-                          : 'No recent GitHub repos found.'}
+                      {github.message}
                     </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          void handleRefreshGithubRepos()
+                        }}
+                        disabled={isRefreshingGithubRepos}
+                        className="border-2 border-foreground text-xs font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                      >
+                        {isLoadingGithubRepos
+                          ? 'Fetching latest repos...'
+                          : isRefreshingGithubRepos
+                            ? 'Refreshing...'
+                            : 'Refresh repos'}
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        {isLoadingGithubRepos
+                          ? 'Loading your latest 10 repos.'
+                          : githubRepos.length > 0
+                            ? `${githubRepos.length} recent repo${githubRepos.length === 1 ? '' : 's'} cached until refresh.`
+                            : 'No recent GitHub repos found.'}
+                      </p>
+                    </div>
                   </div>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    Connect GitHub in Clerk to browse repos.
+                    {github.message}
                   </p>
                 )}
               </div>

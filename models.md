@@ -45,6 +45,18 @@ Kickoff default behavior:
 - every current preset, including `general-engineer`, is expected to keep a
   non-empty starter prompt so BuddyPie can seed the first OpenCode session
 
+Delivery workflow default behavior:
+
+- every current preset appends shared delivery requirements to the managed
+  agent prompt and instructions
+- those requirements tell the agent to use Bun for Node and TypeScript repo
+  commands
+- before handoff, the agent should run the relevant build command plus a
+  dedicated typecheck command, or the closest validation command that covers
+  types when no standalone typecheck exists
+- when GitHub auth is available in the sandbox, the agent should commit and
+  push the current branch so a PR can be opened from that branch
+
 The selected provider/model controls which OpenCode provider and model are
 used at runtime.
 

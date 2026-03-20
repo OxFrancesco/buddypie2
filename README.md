@@ -79,6 +79,11 @@ Every current preset, including `general-engineer`, now ships a non-empty
 starter prompt, and BuddyPie opens the seeded OpenCode session directly in
 the web UI instead of landing on the generic root view.
 
+Every preset also injects a shared delivery workflow into the managed agent
+instructions: use Bun for repo commands, run build and type validation before
+handoff, and push the current branch back to GitHub when sandbox auth is
+available so a PR can be opened from that branch.
+
 The `docs-writer` preset also performs a docs-specific workspace bootstrap
 before OpenCode starts:
 
