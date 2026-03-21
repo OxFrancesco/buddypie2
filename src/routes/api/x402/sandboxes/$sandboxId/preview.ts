@@ -6,6 +6,17 @@ type PreviewRequestBody = {
   port: number
 }
 
+const APP_PREVIEW_PORT_MIN = 3000
+const APP_PREVIEW_PORT_MAX = 9999
+
+function isValidAppPreviewPort(port: number) {
+  return (
+    Number.isInteger(port) &&
+    port >= APP_PREVIEW_PORT_MIN &&
+    port <= APP_PREVIEW_PORT_MAX
+  )
+}
+
 export const Route = createFileRoute('/api/x402/sandboxes/$sandboxId/preview')({
   server: {
     handlers: {
@@ -30,8 +41,11 @@ export const Route = createFileRoute('/api/x402/sandboxes/$sandboxId/preview')({
         const body = await parseJsonBody<PreviewRequestBody>(request)
         const port = Number(body?.port)
 
-        if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-          return jsonError('Choose a valid preview port between 1 and 65535.', 400)
+        if (!isValidAppPreviewPort(port)) {
+          return jsonError(
+            `Choose a valid preview port between ${APP_PREVIEW_PORT_MIN} and ${APP_PREVIEW_PORT_MAX}.`,
+            400,
+          )
         }
 
         if (!auth.sandbox.daytonaSandboxId || !auth.sandbox.workspacePath) {
@@ -42,6 +56,8 @@ export const Route = createFileRoute('/api/x402/sandboxes/$sandboxId/preview')({
           const previewStatus = await getSandboxAppPreviewStatus({
             daytonaSandboxId: auth.sandbox.daytonaSandboxId,
             workspacePath: auth.sandbox.workspacePath,
+            previewAppPath: auth.sandbox.previewAppPath,
+            agentPresetId: auth.sandbox.agentPresetId,
             port,
           })
 

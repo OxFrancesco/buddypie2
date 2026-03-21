@@ -81,7 +81,7 @@ The Daytona client (`src/lib/server/daytona.ts`) handles sandbox lifecycle:
 2. **Clone Repository** - Git clone with optional authentication
 3. **Bootstrap Workspace** - Install dependencies, scaffold docs app if needed
 4. **Start OpenCode** - Launch `opencode web` on port 3000
-5. **Seed Session** - Create initial AI session with kickoff prompt
+5. **Seed Session** - Create initial AI session with kickoff prompt plus the mandatory completion sequence for build, typecheck, and GitHub push
 6. **Return Preview URL** - Direct link to the OpenCode session
 
 ### Key Functions
@@ -121,18 +121,14 @@ The `buildOpenCodeConfig` function generates:
   "model": "openrouter/minimax/minimax-m2.7",
   "default_agent": "general-engineer",
   "instructions": [".buddypie/opencode/AGENTS.md"],
-  "permission": {
-    "skill": {
-      "*": "deny",
-      "buddypie-general-architecture": "allow"
-    }
-  },
+  "permission": "allow",
   "agent": {
     "general-engineer": {
       "description": "Balanced repo analysis and implementation",
       "mode": "primary",
       "model": "openrouter/minimax/minimax-m2.7",
-      "prompt": "You are running in a Daytona sandbox..."
+      "prompt": "You are running in a Daytona sandbox...",
+      "permission": "allow"
     }
   }
 }

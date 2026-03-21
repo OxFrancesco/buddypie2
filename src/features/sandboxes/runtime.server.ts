@@ -42,6 +42,7 @@ type LaunchedSandbox = {
   previewUrl: string
   previewUrlPattern?: string
   workspacePath: string
+  previewAppPath?: string
   opencodeSessionId?: string
 }
 
@@ -517,6 +518,7 @@ async function launchSandboxLifecycle(args: {
       previewUrl: launched.previewUrl,
       previewUrlPattern: launched.previewUrlPattern,
       workspacePath: launched.workspacePath,
+      previewAppPath: launched.previewAppPath,
       opencodeSessionId: launched.opencodeSessionId,
     })
 
@@ -629,6 +631,7 @@ async function restartSandboxLifecycle(args: {
       previewUrl: launched.previewUrl,
       previewUrlPattern: launched.previewUrlPattern,
       workspacePath: launched.workspacePath,
+      previewAppPath: launched.previewAppPath,
       opencodeSessionId: launched.opencodeSessionId,
     })
 
@@ -799,6 +802,8 @@ export async function ensureAppPreviewServerWithPayment(
       await ensureSandboxAppPreviewServer({
         daytonaSandboxId: sandbox.daytonaSandboxId!,
         workspacePath: sandbox.workspacePath!,
+        previewAppPath: sandbox.previewAppPath,
+        agentPresetId: sandbox.agentPresetId,
         port,
       }),
   })
@@ -820,6 +825,8 @@ export async function getAppPreviewLogsForSandbox(args: {
   return await getSandboxAppPreviewLogTail({
     daytonaSandboxId: sandbox.daytonaSandboxId,
     workspacePath: sandbox.workspacePath,
+    previewAppPath: sandbox.previewAppPath,
+    agentPresetId: sandbox.agentPresetId,
     port: args.port,
     lines: args.lines,
   })
@@ -843,6 +850,8 @@ export async function getAppPreviewCommandSuggestionForSandbox(args: {
   return await getSandboxAppPreviewCommandSuggestion({
     daytonaSandboxId: sandbox.daytonaSandboxId,
     workspacePath: sandbox.workspacePath,
+    previewAppPath: sandbox.previewAppPath,
+    agentPresetId: sandbox.agentPresetId,
     port: args.port,
   })
 }

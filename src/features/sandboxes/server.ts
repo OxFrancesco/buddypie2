@@ -40,6 +40,17 @@ type GithubBranchListInput = {
   repoFullName: string
 }
 
+const APP_PREVIEW_PORT_MIN = 3000
+const APP_PREVIEW_PORT_MAX = 9999
+
+function isValidAppPreviewPort(port: number) {
+  return (
+    Number.isInteger(port) &&
+    port >= APP_PREVIEW_PORT_MIN &&
+    port <= APP_PREVIEW_PORT_MAX
+  )
+}
+
 export type GithubRepoOption = {
   id: number
   fullName: string
@@ -110,8 +121,10 @@ export const ensureAppPreviewServer = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const port = Number(data.port)
 
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new Error('Choose a valid preview port between 1 and 65535.')
+    if (!isValidAppPreviewPort(port)) {
+      throw new Error(
+        `Choose a valid preview port between ${APP_PREVIEW_PORT_MIN} and ${APP_PREVIEW_PORT_MAX}.`,
+      )
     }
 
     const paymentMethod = getRequestedPaymentMethod(data.paymentMethod)
@@ -135,8 +148,10 @@ export const getAppPreviewLogs = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const port = Number(data.port)
 
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new Error('Choose a valid preview port between 1 and 65535.')
+    if (!isValidAppPreviewPort(port)) {
+      throw new Error(
+        `Choose a valid preview port between ${APP_PREVIEW_PORT_MIN} and ${APP_PREVIEW_PORT_MAX}.`,
+      )
     }
 
     const { getAppPreviewLogsForSandbox } = await import('./runtime.server')
@@ -152,8 +167,10 @@ export const getAppPreviewCommandSuggestion = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const port = Number(data.port)
 
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new Error('Choose a valid preview port between 1 and 65535.')
+    if (!isValidAppPreviewPort(port)) {
+      throw new Error(
+        `Choose a valid preview port between ${APP_PREVIEW_PORT_MIN} and ${APP_PREVIEW_PORT_MAX}.`,
+      )
     }
 
     const { getAppPreviewCommandSuggestionForSandbox } = await import(

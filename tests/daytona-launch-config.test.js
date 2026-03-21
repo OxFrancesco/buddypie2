@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
+  buildOpenCodeConfig,
+  buildInitialPromptContent,
   buildOpenCodeSessionPreviewUrl,
   isolateSandboxGitBranch,
   resolveOpenCodeLaunchConfig,
 } from '../src/lib/server/daytona.ts'
+import { getOpenCodeAgentPreset } from '../src/lib/opencode/presets.ts'
 import { buildSandboxWorkBranchName } from '../src/lib/sandboxes.ts'
 
 const ORIGINAL_ENV = { ...process.env }
@@ -119,6 +122,35 @@ describe('buildOpenCodeSessionPreviewUrl', () => {
         '/home/daytona/example-repo',
       ),
     ).toBe('https://3000-sandbox.proxy.daytona.works/')
+  })
+})
+
+describe('buildOpenCodeConfig', () => {
+  test('grants the OpenCode web agent full access at both the session and agent levels', () => {
+    const preset = getOpenCodeAgentPreset('general-engineer')
+    const config = JSON.parse(
+      buildOpenCodeConfig(
+        preset,
+        'https://{PORT}-sandbox.proxy.daytona.works/',
+      ),
+    )
+
+    expect(config.permission).toBe('allow')
+    expect(config.agent['general-engineer'].permission).toBe('allow')
+  })
+})
+
+describe('buildInitialPromptContent', () => {
+  test('appends the automatic build, typecheck, and push completion sequence', () => {
+    const prompt = buildInitialPromptContent('Implement the requested change.')
+
+    expect(prompt).toContain('## Required Completion Sequence')
+    expect(prompt).toContain('run the relevant build command')
+    expect(prompt).toContain('run the relevant typecheck command')
+    expect(prompt).toContain('commit and push the current working branch to GitHub')
+    expect(prompt).toContain(
+      'Do not wait for a follow-up prompt before running this completion sequence.',
+    )
   })
 })
 

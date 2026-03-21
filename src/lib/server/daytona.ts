@@ -4,7 +4,6 @@ import type { Sandbox } from '@daytonaio/sdk'
 import type {
   OpenCodeAgentPreset,
   OpenCodeAgentPresetId,
-  OpenCodeSkillPermission,
 } from '~/lib/opencode/presets'
 import {
   getOpenCodeAgentPreset,
@@ -34,6 +33,17 @@ const APP_PREVIEW_START_TIMEOUT_SECONDS = 300
 const APP_PREVIEW_BOOT_TIMEOUT_MS = 40_000
 const APP_PREVIEW_BOOT_POLL_INTERVAL_MS = 1_500
 const APP_PREVIEW_LOG_TAIL_LINES = 120
+const APP_PREVIEW_MIN_PORT = 3000
+const APP_PREVIEW_MAX_PORT = 9999
+const FULL_ACCESS_PERMISSION = 'allow' as const
+const PREVIEW_SCRIPT_PREFERENCE = [
+  'dev:web',
+  'dev',
+  'preview',
+  'start',
+  'web',
+  'server',
+] as const
 const SHARED_ENV_FALLBACKS: Record<string, Array<string>> = {
   VENICE_API_KEY: ['VENICE_INFERENCE_KEY'],
   VENICE_INFERENCE_KEY: ['VENICE_API_KEY'],
@@ -63,6 +73,16 @@ type ExecuteCommandResponse = {
 
 type WorkspaceBootstrapResult = {
   runtimeContext?: WorkspaceBootstrapRuntimeContext
+}
+
+type PreviewTargetResolution = {
+  previewAppPath: string
+}
+
+type PreviewCommandMetadata = {
+  framework: string
+  packageManager: string
+  previewScript: string
 }
 
 type RepositoryRuntimeContext = {
@@ -177,6 +197,14 @@ function sleep(ms: number) {
   })
 }
 
+export function isValidAppPreviewPort(port: number) {
+  return (
+    Number.isInteger(port) &&
+    port >= APP_PREVIEW_MIN_PORT &&
+    port <= APP_PREVIEW_MAX_PORT
+  )
+}
+
 function buildPortProbeScript() {
   return `
 const net = require('node:net')
@@ -196,19 +224,47 @@ socket.once('error', fail)
 `.trim()
 }
 
-function buildPreviewStartCommand(port: number) {
-  const previewLogPath = `.buddypie/logs/app-preview-${port}.log`
+export function resolveLaunchPreviewAppPath(args: {
+  preset: OpenCodeAgentPreset
+  workspacePath: string
+  runtimeContext?: WorkspaceBootstrapRuntimeContext
+}) {
+  return resolvePreviewAppPath({
+    workspacePath: args.workspacePath,
+    agentPresetId: args.preset.id,
+    docsAppPath: args.runtimeContext?.docsAppPath,
+  })
+}
 
+export function resolvePreviewAppPath(args: {
+  workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
+  docsAppPath?: string
+}) {
+  const persistedPreviewAppPath = args.previewAppPath?.trim()
+
+  if (persistedPreviewAppPath) {
+    return persistedPreviewAppPath
+  }
+
+  if (args.agentPresetId === 'docs-writer' && args.docsAppPath) {
+    return args.docsAppPath
+  }
+
+  return args.workspacePath
+}
+
+export function selectPreviewScript(scripts: Record<string, unknown>) {
+  return (
+    PREVIEW_SCRIPT_PREFERENCE.find(
+      (name) => typeof scripts[name] === 'string',
+    ) ?? ''
+  )
+}
+
+function buildPreviewMetadataScript() {
   return `
-set -e
-mkdir -p .buddypie/logs
-
-if [ ! -f package.json ]; then
-  echo "No package.json found in workspace."
-  exit 1
-fi
-
-PREVIEW_METADATA=$(node <<'NODE'
 const fs = require('node:fs')
 
 const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
@@ -221,7 +277,7 @@ const packageManagerField =
   typeof pkg.packageManager === 'string' ? pkg.packageManager : ''
 const packageManagerName = packageManagerField.split('@')[0]
 const hasFile = (name) => fs.existsSync(name)
-const scriptPreference = ['dev:web', 'dev', 'start', 'web', 'server']
+const scriptPreference = ${JSON.stringify([...PREVIEW_SCRIPT_PREFERENCE])}
 const previewScript =
   scriptPreference.find((name) => typeof scripts[name] === 'string') ?? ''
 const previewScriptCommand =
@@ -282,13 +338,100 @@ process.stdout.write(
     previewScript,
   }),
 )
+`.trim()
+}
+
+export function buildPreviewCommand(args: {
+  packageManager: string
+  framework: string
+  previewScript: string
+  port: number
+}) {
+  const { packageManager, framework, previewScript, port } = args
+
+  function buildRunCommand(pm: string, scriptName: string, commandArgs: string) {
+    if (pm === 'yarn') {
+      return commandArgs
+        ? `yarn ${scriptName} ${commandArgs}`
+        : `yarn ${scriptName}`
+    }
+
+    if (pm === 'bun') {
+      return commandArgs
+        ? `export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ${scriptName} ${commandArgs}`
+        : `export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ${scriptName}`
+    }
+
+    const baseCommand = `${pm} run ${scriptName}`
+    return commandArgs ? `${baseCommand} -- ${commandArgs}` : baseCommand
+  }
+
+  let commandArgs = ''
+
+  if (framework === 'next') {
+    commandArgs = `--hostname 0.0.0.0 -p ${port}`
+  } else if (framework === 'vite' || framework === 'astro') {
+    commandArgs = `--host 0.0.0.0 --port ${port}`
+  }
+
+  if (framework === 'expo') {
+    return `CI=1 PORT=${port} npx expo start --web --non-interactive --host lan --port ${port}`
+  }
+
+  return `CI=1 HOST=0.0.0.0 HOSTNAME=0.0.0.0 PORT=${port} ${buildRunCommand(packageManager, previewScript, commandArgs)}`
+}
+
+function buildPreviewScriptMissingMessage() {
+  return `No supported preview script found in package.json. Expected one of ${PREVIEW_SCRIPT_PREFERENCE.join(', ')}.`
+}
+
+export function buildPreviewCommandSuggestion(args: {
+  workspacePath: string
+  previewAppPath: string
+  metadata: PreviewCommandMetadata
+  port: number
+}) {
+  return {
+    command: `cd ${quoteShellArg(args.previewAppPath)} && ${buildPreviewCommand({
+      packageManager: args.metadata.packageManager,
+      framework: args.metadata.framework,
+      previewScript: args.metadata.previewScript,
+      port: args.port,
+    })}`,
+    framework: args.metadata.framework,
+    packageManager: args.metadata.packageManager,
+    previewScript: args.metadata.previewScript,
+    workspacePath: args.workspacePath,
+    previewAppPath: args.previewAppPath,
+  }
+}
+
+function buildPreviewStartCommand(args: {
+  port: number
+  workspacePath: string
+  previewAppPath: string
+}) {
+  const previewLogPath = getAppPreviewLogPath(args.workspacePath, args.port)
+
+  return `
+set -e
+mkdir -p ${quoteShellArg(pathPosix.dirname(previewLogPath))}
+cd ${quoteShellArg(args.previewAppPath)}
+
+if [ ! -f package.json ]; then
+  echo "No package.json found in preview target."
+  exit 1
+fi
+
+PREVIEW_METADATA=$(node <<'NODE'
+${buildPreviewMetadataScript()}
 NODE
 )
 
 PREVIEW_SCRIPT=$(node -e "const meta=JSON.parse(process.argv[1]);process.stdout.write(meta.previewScript||'')" "$PREVIEW_METADATA")
 
 if [ -z "$PREVIEW_SCRIPT" ]; then
-  echo "No supported preview script found in package.json. Expected one of dev:web, dev, start, web, or server."
+  echo ${quoteShellArg(buildPreviewScriptMissingMessage())}
   exit 1
 fi
 
@@ -327,61 +470,24 @@ if [ ! -d node_modules ]; then
   esac
 fi
 
-PREVIEW_START_COMMAND=$(node - "$PACKAGE_MANAGER" "$FRAMEWORK" "$PREVIEW_SCRIPT" "${port}" <<'NODE'
-const [packageManager, framework, previewScript, port] = process.argv.slice(2)
+PREVIEW_START_COMMAND=${quoteShellArg(
+  buildPreviewCommand({
+    packageManager: '__PACKAGE_MANAGER__',
+    framework: '__FRAMEWORK__',
+    previewScript: '__PREVIEW_SCRIPT__',
+    port: args.port,
+  }),
+)}
+PREVIEW_START_COMMAND=$(printf '%s' "$PREVIEW_START_COMMAND" | sed "s/__PACKAGE_MANAGER__/$PACKAGE_MANAGER/g" | sed "s/__FRAMEWORK__/$FRAMEWORK/g" | sed "s/__PREVIEW_SCRIPT__/$PREVIEW_SCRIPT/g")
 
-function buildRunCommand(pm, script, args) {
-  if (pm === 'yarn') {
-    return args ? 'yarn ' + script + ' ' + args : 'yarn ' + script
-  }
+printf "Preview path: %s\\nDetected package manager: %s\\nDetected framework: %s\\nUsing preview script: %s\\nStarting command: %s\\n\\n" ${quoteShellArg(args.previewAppPath)} "$PACKAGE_MANAGER" "$FRAMEWORK" "$PREVIEW_SCRIPT" "$PREVIEW_START_COMMAND" > ${quoteShellArg(previewLogPath)}
+nohup sh -lc "$PREVIEW_START_COMMAND" >> ${quoteShellArg(previewLogPath)} 2>&1 &
 
-  if (pm === 'bun') {
-    return args
-      ? 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' +
-          script +
-          ' ' +
-          args
-      : 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' + script
-  }
-
-  const baseCommand = pm + ' run ' + script
-  return args ? baseCommand + ' -- ' + args : baseCommand
-}
-
-let args = ''
-
-if (framework === 'next') {
-  args = '--hostname 0.0.0.0 -p ' + port
-} else if (framework === 'vite' || framework === 'astro') {
-  args = '--host 0.0.0.0 --port ' + port
-}
-
-let command = ''
-
-if (framework === 'expo') {
-  command =
-    'CI=1 PORT=' +
-    port +
-    ' npx expo start --web --non-interactive --host lan --port ' +
-    port
-} else {
-  const baseCommand = buildRunCommand(packageManager, previewScript, args)
-  command =
-    'CI=1 HOST=0.0.0.0 HOSTNAME=0.0.0.0 PORT=' + port + ' ' + baseCommand
-}
-
-process.stdout.write(command)
-NODE
-)
-
-printf "Detected package manager: %s\\nDetected framework: %s\\nUsing preview script: %s\\nStarting command: %s\\n\\n" "$PACKAGE_MANAGER" "$FRAMEWORK" "$PREVIEW_SCRIPT" "$PREVIEW_START_COMMAND" > ${previewLogPath}
-nohup sh -lc "$PREVIEW_START_COMMAND" >> ${previewLogPath} 2>&1 &
-
-echo "Started preview script '$PREVIEW_SCRIPT' with $PACKAGE_MANAGER for app preview on port ${port}."
+echo "Started preview script '$PREVIEW_SCRIPT' with $PACKAGE_MANAGER for app preview on port ${args.port}."
 `.trim()
 }
 
-function getAppPreviewLogPath(workspacePath: string, port: number) {
+export function getAppPreviewLogPath(workspacePath: string, port: number) {
   return pathPosix.join(
     workspacePath,
     '.buddypie/logs',
@@ -474,7 +580,7 @@ function buildManagedInstructionsContent(
     .join('\n\n')
 }
 
-function buildInitialPromptContent(
+export function buildInitialPromptContent(
   initialPrompt: string,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
   repositoryContext?: RepositoryRuntimeContext,
@@ -485,8 +591,22 @@ function buildInitialPromptContent(
     buildRepositoryRuntimePromptPrefix(repositoryContext)
 
   return [runtimePromptPrefix, repositoryPromptPrefix, initialPrompt]
+    .concat(buildAutomaticCompletionPrompt())
     .filter(Boolean)
     .join('\n\n')
+}
+
+function buildAutomaticCompletionPrompt() {
+  return [
+    '## Required Completion Sequence',
+    '',
+    '- Do not stop after the first implementation pass.',
+    '- In the same run, before handing work back, run the relevant build command for the repo or affected package.',
+    '- Then run the relevant typecheck command or the closest validation command that covers types.',
+    '- If those checks fail, fix the problem before handing work back.',
+    '- If GitHub auth is available in the sandbox, commit and push the current working branch to GitHub.',
+    '- Do not wait for a follow-up prompt before running this completion sequence.',
+  ].join('\n')
 }
 
 function buildRepositoryRuntimeInstructions(
@@ -522,25 +642,10 @@ function buildRepositoryRuntimePromptPrefix(context?: RepositoryRuntimeContext) 
   ].join('\n')
 }
 
-function buildSkillPermissions(
-  preset: OpenCodeAgentPreset,
-): Record<string, OpenCodeSkillPermission> {
-  const permissions: Record<string, OpenCodeSkillPermission> = {
-    '*': 'deny',
-  }
-
-  for (const skill of preset.skills) {
-    permissions[skill.id] = skill.permission ?? 'allow'
-  }
-
-  return permissions
-}
-
-function buildOpenCodeConfig(
+export function buildOpenCodeConfig(
   preset: OpenCodeAgentPreset,
   previewUrlPattern: string,
 ) {
-  const skillPermissions = buildSkillPermissions(preset)
   const usesCustomOpenRouterModel =
     preset.provider === 'openrouter' && preset.model.includes('/')
   const modelId =
@@ -570,9 +675,7 @@ function buildOpenCodeConfig(
       : {}),
     default_agent: preset.id,
     instructions: ['.buddypie/opencode/AGENTS.md'],
-    permission: {
-      skill: skillPermissions,
-    },
+    permission: FULL_ACCESS_PERMISSION,
     agent: {
       [preset.id]: {
         description: preset.description,
@@ -586,9 +689,7 @@ function buildOpenCodeConfig(
           'When starting a server, start it in the background with & so the command does not block further instructions.',
           preset.agentPrompt,
         ].join(' '),
-        permission: {
-          skill: skillPermissions,
-        },
+        permission: FULL_ACCESS_PERMISSION,
       },
     },
     ...(Object.keys(preset.mcp).length > 0 ? { mcp: preset.mcp } : {}),
@@ -903,6 +1004,56 @@ async function bootstrapWorkspace(args: {
       docsAppPath,
       packageManager: bootstrap.packageManager,
     },
+  }
+}
+
+async function resolveSandboxPreviewTarget(args: {
+  sandbox: Sandbox
+  workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
+}): Promise<PreviewTargetResolution> {
+  if (args.previewAppPath?.trim()) {
+    return {
+      previewAppPath: args.previewAppPath.trim(),
+    }
+  }
+
+  if (args.agentPresetId === 'docs-writer') {
+    const docsPreset = getOpenCodeAgentPreset('docs-writer')
+    const bootstrap = docsPreset.workspaceBootstrap
+
+    if (bootstrap?.kind === 'fumadocs-docs-app') {
+      try {
+        const inspection = await inspectDocsAppPaths({
+          sandbox: args.sandbox,
+          workspacePath: args.workspacePath,
+          preferredDocsPath: bootstrap.preferredDocsPath,
+          fallbackDocsPath: bootstrap.fallbackDocsPath,
+        })
+        const docsApp = resolveDocsAppPath(bootstrap, inspection)
+
+        return {
+          previewAppPath: resolvePreviewAppPath({
+            workspacePath: args.workspacePath,
+            agentPresetId: args.agentPresetId,
+            docsAppPath: pathPosix.join(
+              args.workspacePath,
+              docsApp.docsAppPath,
+            ),
+          }),
+        }
+      } catch {
+        // Fall back to the repo root when the docs app cannot be derived safely.
+      }
+    }
+  }
+
+  return {
+    previewAppPath: resolvePreviewAppPath({
+      workspacePath: args.workspacePath,
+      agentPresetId: args.agentPresetId,
+    }),
   }
 }
 
@@ -1349,6 +1500,11 @@ export async function createOpenCodeSandbox(args: {
       workspaceBootstrap.runtimeContext,
       repo.repositoryContext,
     )
+    const previewAppPath = resolveLaunchPreviewAppPath({
+      preset,
+      workspacePath: repo.workspacePath,
+      runtimeContext: workspaceBootstrap.runtimeContext,
+    })
 
     await writeManagedWorkspaceFiles(
       sandbox,
@@ -1389,6 +1545,7 @@ export async function createOpenCodeSandbox(args: {
       repoProvider: repo.repoProvider,
       branch: repo.branch,
       workspacePath: repo.workspacePath,
+      previewAppPath,
       previewUrl: sessionPreviewUrl,
       previewUrlPattern,
       daytonaSandboxId: sandbox.id,
@@ -1419,10 +1576,14 @@ export async function deleteOpenCodeSandbox(daytonaSandboxId: string) {
 export async function ensureSandboxAppPreviewServer(args: {
   daytonaSandboxId: string
   workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
   port: number
 }) {
-  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
-    throw new Error('Choose a valid preview port between 1 and 65535.')
+  if (!isValidAppPreviewPort(args.port)) {
+    throw new Error(
+      `Choose a valid preview port between ${APP_PREVIEW_MIN_PORT} and ${APP_PREVIEW_MAX_PORT}.`,
+    )
   }
 
   const daytona = new Daytona({
@@ -1430,6 +1591,12 @@ export async function ensureSandboxAppPreviewServer(args: {
     apiUrl: getDaytonaApiUrl(),
   })
   const sandbox = await daytona.get(args.daytonaSandboxId)
+  const previewTarget = await resolveSandboxPreviewTarget({
+    sandbox,
+    workspacePath: args.workspacePath,
+    previewAppPath: args.previewAppPath,
+    agentPresetId: args.agentPresetId,
+  })
 
   if (await isPortListeningInSandbox(sandbox, args.workspacePath, args.port)) {
     const previewLink = await sandbox.getPreviewLink(args.port)
@@ -1438,11 +1605,16 @@ export async function ensureSandboxAppPreviewServer(args: {
       status: 'already-running' as const,
       port: args.port,
       previewUrl: previewLink.url,
+      previewAppPath: previewTarget.previewAppPath,
     }
   }
 
   const response = (await sandbox.process.executeCommand(
-    buildPreviewStartCommand(args.port),
+    buildPreviewStartCommand({
+      port: args.port,
+      workspacePath: args.workspacePath,
+      previewAppPath: previewTarget.previewAppPath,
+    }),
     args.workspacePath,
     undefined,
     APP_PREVIEW_START_TIMEOUT_SECONDS,
@@ -1466,6 +1638,7 @@ export async function ensureSandboxAppPreviewServer(args: {
         status: 'started' as const,
         port: args.port,
         previewUrl: previewLink.url,
+        previewAppPath: previewTarget.previewAppPath,
       }
     }
 
@@ -1480,10 +1653,14 @@ export async function ensureSandboxAppPreviewServer(args: {
 export async function getSandboxAppPreviewStatus(args: {
   daytonaSandboxId: string
   workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
   port: number
 }) {
-  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
-    throw new Error('Choose a valid preview port between 1 and 65535.')
+  if (!isValidAppPreviewPort(args.port)) {
+    throw new Error(
+      `Choose a valid preview port between ${APP_PREVIEW_MIN_PORT} and ${APP_PREVIEW_MAX_PORT}.`,
+    )
   }
 
   const daytona = new Daytona({
@@ -1491,6 +1668,12 @@ export async function getSandboxAppPreviewStatus(args: {
     apiUrl: getDaytonaApiUrl(),
   })
   const sandbox = await daytona.get(args.daytonaSandboxId)
+  const previewTarget = await resolveSandboxPreviewTarget({
+    sandbox,
+    workspacePath: args.workspacePath,
+    previewAppPath: args.previewAppPath,
+    agentPresetId: args.agentPresetId,
+  })
 
   if (
     !(await isPortListeningInSandbox(sandbox, args.workspacePath, args.port))
@@ -1498,6 +1681,7 @@ export async function getSandboxAppPreviewStatus(args: {
     return {
       status: 'not-running' as const,
       port: args.port,
+      previewAppPath: previewTarget.previewAppPath,
     }
   }
 
@@ -1507,16 +1691,21 @@ export async function getSandboxAppPreviewStatus(args: {
     status: 'already-running' as const,
     port: args.port,
     previewUrl: previewLink.url,
+    previewAppPath: previewTarget.previewAppPath,
   }
 }
 
 export async function getSandboxAppPreviewCommandSuggestion(args: {
   daytonaSandboxId: string
   workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
   port: number
 }) {
-  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
-    throw new Error('Choose a valid preview port between 1 and 65535.')
+  if (!isValidAppPreviewPort(args.port)) {
+    throw new Error(
+      `Choose a valid preview port between ${APP_PREVIEW_MIN_PORT} and ${APP_PREVIEW_MAX_PORT}.`,
+    )
   }
 
   const daytona = new Daytona({
@@ -1524,136 +1713,17 @@ export async function getSandboxAppPreviewCommandSuggestion(args: {
     apiUrl: getDaytonaApiUrl(),
   })
   const sandbox = await daytona.get(args.daytonaSandboxId)
+  const previewTarget = await resolveSandboxPreviewTarget({
+    sandbox,
+    workspacePath: args.workspacePath,
+    previewAppPath: args.previewAppPath,
+    agentPresetId: args.agentPresetId,
+  })
   const response = (await sandbox.process.executeCommand(
-    `
-node - ${args.port} <<'NODE'
-const fs = require('node:fs')
-const port = Number(process.argv[2] || process.argv[1] || 3000)
-
-if (!fs.existsSync('package.json')) {
-  console.error('No package.json found in workspace.')
-  process.exit(1)
-}
-
-const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
-const scripts = pkg.scripts ?? {}
-const deps = {
-  ...(pkg.dependencies ?? {}),
-  ...(pkg.devDependencies ?? {}),
-}
-const packageManagerField =
-  typeof pkg.packageManager === 'string' ? pkg.packageManager : ''
-const packageManagerName = packageManagerField.split('@')[0]
-const hasFile = (name) => fs.existsSync(name)
-const scriptPreference = ['dev:web', 'dev', 'start', 'web', 'server']
-const previewScript =
-  scriptPreference.find((name) => typeof scripts[name] === 'string') ?? ''
-const previewScriptCommand =
-  typeof scripts[previewScript] === 'string' ? scripts[previewScript] : ''
-
-if (!previewScript) {
-  console.error(
-    'No supported preview script found in package.json. Expected one of dev:web, dev, start, web, or server.',
-  )
-  process.exit(1)
-}
-
-let packageManager = 'npm'
-
-if (
-  packageManagerName === 'bun' ||
-  hasFile('bun.lock') ||
-  hasFile('bun.lockb')
-) {
-  packageManager = 'bun'
-} else if (
-  packageManagerName === 'pnpm' ||
-  hasFile('pnpm-lock.yaml')
-) {
-  packageManager = 'pnpm'
-} else if (
-  packageManagerName === 'yarn' ||
-  hasFile('yarn.lock')
-) {
-  packageManager = 'yarn'
-}
-
-let framework = 'generic'
-const script = previewScriptCommand.toLowerCase()
-
-if (deps.expo || script.includes('expo ')) {
-  framework = 'expo'
-} else if (deps.next || script.includes('next ')) {
-  framework = 'next'
-} else if (
-  deps.astro ||
-  script.includes('astro ') ||
-  script.startsWith('astro')
-) {
-  framework = 'astro'
-} else if (
-  deps.vite ||
-  deps['@sveltejs/kit'] ||
-  deps['solid-start'] ||
-  script.includes('vite ') ||
-  script.startsWith('vite')
-) {
-  framework = 'vite'
-} else if (
-  deps['react-scripts'] ||
-  script.includes('react-scripts ')
-) {
-  framework = 'cra'
-}
-
-function buildRunCommand(pm, scriptName, args) {
-  if (pm === 'yarn') {
-    return args ? 'yarn ' + scriptName + ' ' + args : 'yarn ' + scriptName
-  }
-
-  if (pm === 'bun') {
-    return args
-      ? 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' +
-          scriptName +
-          ' ' +
-          args
-      : 'export PATH="$HOME/.bun/bin:$PATH" && $HOME/.bun/bin/bun run ' + scriptName
-  }
-
-  const baseCommand = pm + ' run ' + scriptName
-  return args ? baseCommand + ' -- ' + args : baseCommand
-}
-
-let commandArgs = ''
-
-if (framework === 'next') {
-  commandArgs = '--hostname 0.0.0.0 -p ' + port
-} else if (framework === 'vite' || framework === 'astro') {
-  commandArgs = '--host 0.0.0.0 --port ' + port
-}
-
-const command =
-  framework === 'expo'
-    ? 'CI=1 PORT=' +
-      port +
-      ' npx expo start --web --non-interactive --host lan --port ' +
-      port
-    : 'CI=1 HOST=0.0.0.0 HOSTNAME=0.0.0.0 PORT=' +
-      port +
-      ' ' +
-      buildRunCommand(packageManager, previewScript, commandArgs)
-
-process.stdout.write(
-  JSON.stringify({
-    command,
-    framework,
-    packageManager,
-    previewScript,
-  }),
-)
-NODE
-    `.trim(),
-    args.workspacePath,
+    `node <<'NODE'
+${buildPreviewMetadataScript()}
+NODE`.trim(),
+    previewTarget.previewAppPath,
     undefined,
     30,
   )) as ExecuteCommandResponse
@@ -1670,12 +1740,7 @@ NODE
     throw new Error('Could not determine a preview command for this repo.')
   }
 
-  let payload: {
-    command?: string
-    framework?: string
-    packageManager?: string
-    previewScript?: string
-  }
+  let payload: Partial<PreviewCommandMetadata>
 
   try {
     payload = JSON.parse(stdout) as typeof payload
@@ -1685,27 +1750,34 @@ NODE
     )
   }
 
-  if (!payload.command || !payload.packageManager || !payload.previewScript) {
+  if (!payload.packageManager || !payload.previewScript) {
     throw new Error('The preview command suggestion was incomplete.')
   }
 
-  return {
-    command: `cd ${quoteShellArg(args.workspacePath)} && ${payload.command}`,
-    framework: payload.framework ?? 'generic',
-    packageManager: payload.packageManager,
-    previewScript: payload.previewScript,
+  return buildPreviewCommandSuggestion({
     workspacePath: args.workspacePath,
-  }
+    previewAppPath: previewTarget.previewAppPath,
+    metadata: {
+      framework: payload.framework ?? 'generic',
+      packageManager: payload.packageManager,
+      previewScript: payload.previewScript,
+    },
+    port: args.port,
+  })
 }
 
 export async function getSandboxAppPreviewLogTail(args: {
   daytonaSandboxId: string
   workspacePath: string
+  previewAppPath?: string
+  agentPresetId?: string
   port: number
   lines?: number
 }) {
-  if (!Number.isInteger(args.port) || args.port < 1 || args.port > 65_535) {
-    throw new Error('Choose a valid preview port between 1 and 65535.')
+  if (!isValidAppPreviewPort(args.port)) {
+    throw new Error(
+      `Choose a valid preview port between ${APP_PREVIEW_MIN_PORT} and ${APP_PREVIEW_MAX_PORT}.`,
+    )
   }
 
   const lines =
@@ -1719,6 +1791,12 @@ export async function getSandboxAppPreviewLogTail(args: {
     apiUrl: getDaytonaApiUrl(),
   })
   const sandbox = await daytona.get(args.daytonaSandboxId)
+  const previewTarget = await resolveSandboxPreviewTarget({
+    sandbox,
+    workspacePath: args.workspacePath,
+    previewAppPath: args.previewAppPath,
+    agentPresetId: args.agentPresetId,
+  })
   const response = (await sandbox.process.executeCommand(
     [
       `if [ -f ${quoteShellArg(logPath)} ]; then`,
@@ -1736,6 +1814,7 @@ export async function getSandboxAppPreviewLogTail(args: {
     port: args.port,
     output: getCommandStdout(response).trim(),
     logPath,
+    previewAppPath: previewTarget.previewAppPath,
   }
 }
 

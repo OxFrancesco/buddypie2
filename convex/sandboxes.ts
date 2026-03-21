@@ -33,6 +33,7 @@ export const sandboxRecordValidator = v.object({
   previewUrl: v.optional(v.string()),
   previewUrlPattern: v.optional(v.string()),
   workspacePath: v.optional(v.string()),
+  previewAppPath: v.optional(v.string()),
   errorMessage: v.optional(v.string()),
   agentReserveId: v.optional(v.id('agentReserves')),
   launchLeaseId: v.optional(v.id('reserveLeases')),
@@ -184,6 +185,7 @@ export const markReady = mutation({
     previewUrl: v.string(),
     previewUrlPattern: v.optional(v.string()),
     workspacePath: v.string(),
+    previewAppPath: v.optional(v.string()),
     opencodeSessionId: v.optional(v.string()),
   },
   returns: sandboxRecordValidator,
@@ -211,6 +213,7 @@ export const markReady = mutation({
       previewUrl: args.previewUrl,
       ...(args.previewUrlPattern ? { previewUrlPattern: args.previewUrlPattern } : {}),
       workspacePath: args.workspacePath,
+      ...(args.previewAppPath ? { previewAppPath: args.previewAppPath } : {}),
       ...(args.opencodeSessionId ? { opencodeSessionId: args.opencodeSessionId } : {}),
       updatedAt: Date.now(),
     })

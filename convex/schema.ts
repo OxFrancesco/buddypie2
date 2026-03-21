@@ -34,6 +34,7 @@ export default defineSchema({
     previewUrl: v.optional(v.string()),
     previewUrlPattern: v.optional(v.string()),
     workspacePath: v.optional(v.string()),
+    previewAppPath: v.optional(v.string()),
     errorMessage: v.optional(v.string()),
     agentReserveId: v.optional(v.id('agentReserves')),
     launchLeaseId: v.optional(v.id('reserveLeases')),

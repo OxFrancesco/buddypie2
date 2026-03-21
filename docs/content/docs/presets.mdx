@@ -237,6 +237,7 @@ When a sandbox launches:
 2. Validate against supported model options
 3. Fall back to preset default if not specified
 4. Inject required environment variables
+5. Seed the first prompt with an automatic completion sequence so the agent builds, checks types, and pushes the branch without waiting for a follow-up prompt
 
 ### Config Generation
 
@@ -248,19 +249,14 @@ The `buildOpenCodeConfig` function generates:
   "model": "openrouter/minimax/minimax-m2.7",
   "default_agent": "general-engineer",
   "instructions": [".buddypie/opencode/AGENTS.md"],
-  "permission": {
-    "skill": {
-      "*": "deny",
-      "buddypie-general-architecture": "allow",
-      "buddypie-general-release-check": "allow"
-    }
-  },
+  "permission": "allow",
   "agent": {
     "general-engineer": {
       "description": "Balanced repo analysis...",
       "mode": "primary",
       "model": "openrouter/minimax/minimax-m2.7",
-      "prompt": "You are running in a Daytona sandbox..."
+      "prompt": "You are running in a Daytona sandbox...",
+      "permission": "allow"
     }
   }
 }
@@ -268,13 +264,9 @@ The `buildOpenCodeConfig` function generates:
 
 ### Permission Model
 
-Skills are permission-controlled:
-
-- `allow` - Execute without asking
-- `ask` - Request user confirmation
-- `deny` - Block execution
-
-All unspecified skills default to `deny`.
+BuddyPie now starts the OpenCode web agent with blanket `allow` permissions at
+both the session and agent levels. Managed skills are still written into the
+sandbox, but the web agent is not sandboxed by a BuddyPie-level skill denylist.
 
 ## Troubleshooting
 
@@ -297,9 +289,9 @@ All unspecified skills default to `deny`.
   
   <Accordion id="skill-permission-denied" title="Skill permission denied">
     
-    The skill must be listed in the preset's `skills` array with permission `allow` or `ask`.
-    
-    Skills not listed default to `deny`.
+    BuddyPie no longer applies a preset-level skill denylist in the generated
+    OpenCode config. If a capability is still blocked, inspect the underlying
+    OpenCode runtime or sandbox environment rather than the BuddyPie preset.
     
   </Accordion>
 </Accordions>

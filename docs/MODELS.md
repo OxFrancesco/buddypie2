@@ -57,6 +57,9 @@ Delivery workflow default behavior:
 - before handoff, the agent should run the relevant build command plus a
   dedicated typecheck command, or the closest validation command that covers
   types when no standalone typecheck exists
+- the agent should do that automatically as part of the first requested task
+  and should not wait for a follow-up prompt before running the completion
+  sequence
 - when GitHub auth is available in the sandbox, the agent should commit and
   push the current branch so a PR can be opened from that branch
 

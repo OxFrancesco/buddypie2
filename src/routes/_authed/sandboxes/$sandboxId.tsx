@@ -4,9 +4,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient, useSuspenseQuery } from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
-import { DelegatedBudgetManager } from '~/components/delegated-budget-manager'
 import { DeleteSandboxModal } from '~/components/delete-sandbox-modal'
-import { PaymentMethodToggle } from '~/components/payment-method-toggle'
 import { Alert, AlertDescription } from '~/components/ui/alert'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
@@ -24,7 +22,6 @@ import {
 } from '~/features/sandboxes/server'
 import { formatUsdCents } from '~/lib/billing/format'
 import { formatSandboxPaymentMethod } from '~/lib/billing/presentation'
-import { readConnectedWalletUsdcBalance } from '~/lib/billing/wallet-balance-client'
 import { postJsonWithX402Payment } from '~/lib/billing/x402-client'
 import {
   getOpenCodeModelOptionByProviderAndModel,
@@ -36,6 +33,8 @@ import {
 } from '~/lib/sandboxes'
 
 const SWIPE_DISTANCE_PX = 60
+const APP_PREVIEW_PORT_MIN = 3000
+const APP_PREVIEW_PORT_MAX = 9999
 const DEFAULT_APP_PREVIEW_PORT = '5173'
 const QUICK_PREVIEW_PORTS = ['5173', '4173', '3001', '8080'] as const
 const PREVIEW_TERMINAL_FALLBACK_DELAY_MS = 10_000
@@ -44,6 +43,7 @@ type PreviewBootResult = {
   status: 'already-running' | 'started'
   port: number
   previewUrl: string
+  previewAppPath?: string
 }
 
 type TerminalAccessResult = {
@@ -62,6 +62,13 @@ type PreviewCommandSuggestionResult = {
   packageManager: string
   previewScript: string
   workspacePath: string
+  previewAppPath: string
+}
+
+type PreviewLogResult = {
+  output: string
+  logPath: string
+  previewAppPath?: string
 }
 
 type RestartResult = {
@@ -102,7 +109,11 @@ function derivePreviewUrlPattern(
 
 function isValidPreviewPort(value: string) {
   const port = Number(value)
-  return Number.isInteger(port) && port > 0 && port < 65_536
+  return (
+    Number.isInteger(port) &&
+    port >= APP_PREVIEW_PORT_MIN &&
+    port <= APP_PREVIEW_PORT_MAX
+  )
 }
 
 function formatDateTime(value?: string | number | null) {
@@ -117,6 +128,27 @@ function formatDateTime(value?: string | number | null) {
   }
 
   return parsedDate.toLocaleString()
+}
+
+function formatRemainingBudgetDisplay(
+  summary: DelegatedBudgetSummary | undefined,
+) {
+  if (!summary) {
+    return '—'
+  }
+
+  const remaining = summary.remainingAmountUsdCents
+  const configured = summary.configuredAmountUsdCents
+
+  if (remaining != null && configured != null) {
+    return `${formatUsdCents(remaining)} / ${formatUsdCents(configured)}`
+  }
+
+  if (remaining != null) {
+    return formatUsdCents(remaining)
+  }
+
+  return '—'
 }
 
 export const Route = createFileRoute('/_authed/sandboxes/$sandboxId')({
@@ -137,9 +169,6 @@ export const Route = createFileRoute('/_authed/sandboxes/$sandboxId')({
       ),
       context.queryClient.ensureQueryData(
         convexQuery(api.billing.pricingCatalog, {}),
-      ),
-      context.queryClient.ensureQueryData(
-        convexQuery(api.billing.currentDelegatedBudget, {}),
       ),
     ])
   },
@@ -166,9 +195,6 @@ function SandboxDetailRoute() {
   const { data: pricingCatalog } = useSuspenseQuery(
     convexQuery(api.billing.pricingCatalog, {}),
   )
-  const { data: delegatedBudgetRecord } = useSuspenseQuery(
-    convexQuery(api.billing.currentDelegatedBudget, {}),
-  )
   const [paymentMethod, setPaymentMethod] =
     useState<SandboxPaymentMethod>('credits')
   const [isBusy, setIsBusy] = useState(false)
@@ -184,6 +210,9 @@ function SandboxDetailRoute() {
   const [previewLogsError, setPreviewLogsError] = useState<string | null>(null)
   const [isPreviewLogsLoading, setIsPreviewLogsLoading] = useState(false)
   const [previewLogsRequestNonce, setPreviewLogsRequestNonce] = useState(0)
+  const [resolvedPreviewAppPath, setResolvedPreviewAppPath] = useState<
+    string | null
+  >(null)
   const [previewBootStartedAt, setPreviewBootStartedAt] = useState<
     number | null
   >(null)
@@ -216,30 +245,12 @@ function SandboxDetailRoute() {
   }
   const delegatedBudget = billingSummaryView.delegatedBudget
   const delegatedBudgetHealthQuery = useQuery({
-    queryKey: [
-      'billing',
-      'delegated-budget-health',
-      delegatedBudgetRecord?._id ?? 'none',
-    ],
+    queryKey: ['billing', 'delegated-budget-health'],
     queryFn: () => readCurrentDelegatedBudgetHealth(),
     staleTime: 15_000,
   })
   const delegatedBudgetHealth = delegatedBudgetHealthQuery.data
-  const connectedWalletUsdcBalanceQuery = useQuery({
-    queryKey: [
-      'billing',
-      'connected-wallet-usdc-balance',
-      pricingCatalog.environment.chainId,
-      pricingCatalog.environment.delegatedBudget.tokenAddress,
-    ],
-    queryFn: () =>
-      readConnectedWalletUsdcBalance({
-        chainId: pricingCatalog.environment.chainId,
-        tokenAddress: pricingCatalog.environment.delegatedBudget.tokenAddress,
-      }),
-    staleTime: 15_000,
-  })
-  const connectedWalletUsdcBalance = connectedWalletUsdcBalanceQuery.data
+  const remainingBudgetDisplay = formatRemainingBudgetDisplay(delegatedBudget)
   const hasActiveDelegatedBudget =
     delegatedBudget?.status === 'active' &&
     delegatedBudgetHealth?.health === 'usable'
@@ -272,6 +283,8 @@ function SandboxDetailRoute() {
     sandbox?.previewUrl,
     sandbox?.previewUrlPattern,
   )
+  const effectivePreviewAppPath =
+    resolvedPreviewAppPath ?? sandbox?.previewAppPath ?? sandbox?.workspacePath
   const appPreviewUrl = useMemo(() => {
     if (activePreviewUrl) {
       return activePreviewUrl
@@ -311,9 +324,6 @@ function SandboxDetailRoute() {
         queryKey: convexQuery(api.billing.dashboardSummary, {}).queryKey,
       }),
       queryClient.invalidateQueries({
-        queryKey: convexQuery(api.billing.currentDelegatedBudget, {}).queryKey,
-      }),
-      queryClient.invalidateQueries({
         queryKey: ['billing', 'delegated-budget-health'],
       }),
     ])
@@ -324,9 +334,9 @@ function SandboxDetailRoute() {
       delegatedBudgetHealth?.message ??
         'Set up a healthy delegated budget before using that payment rail.',
     )
-    document.getElementById('delegated-budget')?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
+    void navigate({
+      to: '/profile',
+      hash: 'delegated-budget',
     })
   }
 
@@ -370,6 +380,7 @@ function SandboxDetailRoute() {
             })
 
       setActivePreviewUrl(result.previewUrl ?? null)
+      setResolvedPreviewAppPath(result.previewAppPath ?? null)
       setPreviewIframeVersion((value) => value + 1)
       await refreshSandboxQueries()
     } catch (bootError) {
@@ -582,6 +593,7 @@ function SandboxDetailRoute() {
 
   useEffect(() => {
     setActivePreviewUrl(null)
+    setResolvedPreviewAppPath(null)
     previewBootAttemptKeyRef.current = null
     setPreviewBootStartedAt(null)
     setShowManualPreviewFallback(false)
@@ -685,6 +697,7 @@ function SandboxDetailRoute() {
     })
       .then((result) => {
         setPreviewCommandSuggestion(result)
+        setResolvedPreviewAppPath(result.previewAppPath ?? null)
       })
       .catch((commandError) => {
         setPreviewCommandSuggestionError(
@@ -725,9 +738,10 @@ function SandboxDetailRoute() {
         port,
       },
     })
-      .then((result) => {
+      .then((result: PreviewLogResult) => {
         setPreviewLogs(result.output || 'No logs yet.')
         setPreviewLogPath(result.logPath)
+        setResolvedPreviewAppPath(result.previewAppPath ?? null)
       })
       .catch((logError) => {
         setPreviewLogsError(
@@ -854,10 +868,10 @@ function SandboxDetailRoute() {
               </div>
               <div className="border-2 border-foreground bg-muted p-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  Workspace
+                  Remaining budget
                 </p>
-                <p className="mt-1 break-all font-bold">
-                  {sandbox.workspacePath || 'Provisioning...'}
+                <p className="mt-1 font-bold tabular-nums">
+                  {remainingBudgetDisplay}
                 </p>
               </div>
             </div>
@@ -992,62 +1006,12 @@ function SandboxDetailRoute() {
             </div>
             <div className="border-2 border-foreground bg-muted p-3">
               <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                Workspace
+                Remaining budget
               </p>
-              <p className="mt-1 break-all font-bold">
-                {sandbox.workspacePath || 'Provisioning...'}
+              <p className="mt-1 font-bold tabular-nums">
+                {remainingBudgetDisplay}
               </p>
             </div>
-          </div>
-
-          <div className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <PaymentMethodToggle
-              value={paymentMethod}
-              onChange={(nextValue) => {
-                setError(null)
-                setPaymentMethod(nextValue)
-              }}
-              creditsDescription="Use the shared BuddyPie wallet for preview, restart, SSH, and terminal access."
-              x402Description={`Pay per action from your wallet on ${sandboxUsage.wallet?.fundingNetwork ?? 'Base'}.`}
-              delegatedBudgetDescription={
-                hasActiveDelegatedBudget
-                  ? 'Use an active MetaMask delegated budget for the same actions.'
-                  : delegatedBudgetHealth?.message ??
-                    'Set up a MetaMask delegated budget before selecting this rail.'
-              }
-              delegatedBudgetDisabled={!hasActiveDelegatedBudget}
-              creditsBalanceFormatted={formatUsdCents(
-                billingSummary.wallet.availableUsdCents,
-              )}
-              x402BalanceFormatted={
-                connectedWalletUsdcBalance?.balanceUsdCents != null
-                  ? formatUsdCents(
-                      connectedWalletUsdcBalance.balanceUsdCents,
-                    )
-                  : undefined
-              }
-              delegatedBudgetRemainingFormatted={
-                delegatedBudget
-                  ? formatUsdCents(
-                      delegatedBudget.remainingAmountUsdCents ?? 0,
-                    )
-                  : undefined
-              }
-            />
-
-            <DelegatedBudgetManager
-              id="delegated-budget"
-              summary={delegatedBudget}
-              record={delegatedBudgetRecord}
-              health={delegatedBudgetHealth}
-              environment={pricingCatalog.environment}
-              onUpdated={refreshSandboxQueries}
-              onSelectRail={() => {
-                setError(null)
-                setPaymentMethod('delegated_budget')
-              }}
-              compact
-            />
           </div>
         </CardContent>
       </Card>
@@ -1195,7 +1159,8 @@ function SandboxDetailRoute() {
               />
               {!isValidPreviewPort(previewPort) ? (
                 <p className="mt-2 text-xs text-destructive">
-                  Enter a valid port between 1 and 65535.
+                  Enter a valid port between {APP_PREVIEW_PORT_MIN} and{' '}
+                  {APP_PREVIEW_PORT_MAX}.
                 </p>
               ) : null}
 
@@ -1256,6 +1221,19 @@ function SandboxDetailRoute() {
                     ) : null}
                   </div>
                 ) : null}
+              </div>
+
+              <div className="mt-4 rounded-md border-2 border-foreground bg-background p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Preview Target
+                </p>
+                <p className="mt-2 break-all text-xs font-bold">
+                  {effectivePreviewAppPath ?? 'Resolving preview app path...'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Docs sandboxes target the generated docs app. Other sandboxes
+                  target the main app workspace.
+                </p>
               </div>
 
               {showManualPreviewFallback ? (

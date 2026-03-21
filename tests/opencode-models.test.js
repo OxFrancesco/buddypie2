@@ -71,11 +71,17 @@ describe('preset model defaults', () => {
 
   test('adds the shared delivery workflow to every preset prompt and instructions', () => {
     for (const preset of openCodeAgentPresets) {
+      expect(preset.agentPrompt).toContain(
+        'Do not wait for a follow-up prompt before finishing delivery',
+      )
       expect(preset.agentPrompt).toContain('run the relevant build command')
       expect(preset.agentPrompt).toContain('run the relevant typecheck command')
       expect(preset.agentPrompt).toContain('dedicated working branch')
       expect(preset.agentPrompt).toContain('push the current branch')
       expect(preset.instructionsMd).toContain('## Required Delivery Workflow')
+      expect(preset.instructionsMd).toContain(
+        'Do not wait for a follow-up prompt before finishing delivery for the initial request.',
+      )
       expect(preset.instructionsMd).toContain('Use Bun for Node and TypeScript repo commands')
       expect(preset.instructionsMd).toContain('dedicated working branch')
       expect(preset.instructionsMd).toContain('push the current branch')
