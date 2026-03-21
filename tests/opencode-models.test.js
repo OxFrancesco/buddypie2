@@ -7,15 +7,15 @@ import {
 } from '../src/lib/opencode/presets.ts'
 
 describe('resolveOpenCodeModelOption', () => {
-  test('returns the configured Venice model when provider and model are supplied', () => {
+  test('returns the configured Venice MiniMax model when provider and model are supplied', () => {
     expect(
       resolveOpenCodeModelOption({
         provider: 'venice',
-        model: 'openai-gpt-53-codex',
+        model: 'minimax-m27',
       }),
     ).toMatchObject({
       provider: 'venice',
-      model: 'openai-gpt-53-codex',
+      model: 'minimax-m27',
       requiredEnv: ['VENICE_API_KEY'],
     })
   })
@@ -54,11 +54,11 @@ describe('getOpenCodeModelOptionByProviderAndModel', () => {
 })
 
 describe('preset model defaults', () => {
-  test('uses Venice GLM 5 for the docs preset default', () => {
+  test('uses Venice MiniMax M2.7 for the docs preset default', () => {
     expect(getOpenCodeAgentPreset('docs-writer')).toMatchObject({
-      defaultModelOptionId: 'venice-glm-5',
+      defaultModelOptionId: 'venice-minimax-m2.7',
       provider: 'venice',
-      model: 'zai-org-glm-5',
+      model: 'minimax-m27',
       requiredEnv: ['VENICE_API_KEY'],
     })
   })
@@ -80,5 +80,16 @@ describe('preset model defaults', () => {
       expect(preset.instructionsMd).toContain('dedicated working branch')
       expect(preset.instructionsMd).toContain('push the current branch')
     }
+  })
+
+  test('adds explicit npm docs verification steps to the docs preset', () => {
+    const preset = getOpenCodeAgentPreset('docs-writer')
+
+    expect(preset.instructionsMd).toContain('use `npm`, not Bun')
+    expect(preset.instructionsMd).toContain('`npm run types:check`')
+    expect(preset.instructionsMd).toContain('`npm run build`')
+    expect(preset.instructionsMd).toContain('`npm run dev` or `npm run preview`')
+    expect(preset.starterPrompt).toContain('Validate the result with npm inside the docs app')
+    expect(preset.workspaceBootstrap?.packageManager).toBe('npm')
   })
 })

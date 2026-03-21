@@ -142,124 +142,197 @@ await convex.mutation(api.sandboxes.remove, {
 
 ### Queries
 
-#### billing.getWallet
+#### billing.dashboardSummary
 
-Get the user's credit wallet state.
+Get the current user's billing dashboard snapshot.
 
 ```ts
-const wallet = await convex.query(api.billing.getWallet, {
-  environment: 'production',
-})
+const summary = await convex.query(api.billing.dashboardSummary, {})
 ```
 
-**Arguments:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `environment` | 'staging' \| 'production' | No | Environment (default: 'production') |
+**Returns:** Wallet snapshot, recent charges, recent ledger entries, current plan snapshot, and the current delegated-budget summary.
 
-**Returns:**
-```ts
-{
-  accountId: `Id&lt;creditAccounts&gt;` | null
-  currency: 'USD'
-  availableUsdCents: number
-  heldUsdCents: number
-  lifetimeCreditedUsdCents: number
-  lifetimeSpentUsdCents: number
-  fundingAsset: 'USDC'
-  fundingNetwork: 'base-sepolia' | 'base-mainnet'
-  environment: 'staging' | 'production'
-  chainId: number
-  x402Network: string
-}
-```
+#### billing.sandboxUsage
 
-#### billing.getSandboxCharges
-
-Get charges for a specific sandbox.
+Get billing usage details for a specific sandbox.
 
 ```ts
-const charges = await convex.query(api.billing.getSandboxCharges, {
+const usage = await convex.query(api.billing.sandboxUsage, {
   sandboxId: 'sandboxes_abc123',
 })
 ```
 
-**Returns:** Array of billing charge records.
+**Arguments:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `sandboxId` | `Id&lt;sandboxes&gt;` | Yes | Sandbox ID |
 
-#### billing.getDelegatedBudgetSummary
+**Returns:** Billed total, wallet snapshot when available, sandbox charges, and delegated-budget summary.
 
-Get delegated budget configurations.
+#### billing.currentDelegatedBudget
+
+Get the current active delegated budget for the user.
 
 ```ts
-const budgets = await convex.query(api.billing.getDelegatedBudgetSummary, {})
+const budget = await convex.query(api.billing.currentDelegatedBudget, {})
 ```
 
-**Returns:** Array of delegated budget summaries.
+**Returns:** Active delegated-budget record or `null`.
+
+#### billing.listDelegatedBudgetSettlements
+
+List recent delegated-budget settlements for the current user.
+
+```ts
+const settlements = await convex.query(
+  api.billing.listDelegatedBudgetSettlements,
+  {},
+)
+```
+
+**Returns:** Array of recent delegated-budget settlement records.
+
+#### billing.pricingCatalog
+
+Get the active price catalog and billing environment metadata.
+
+```ts
+const pricing = await convex.query(api.billing.pricingCatalog, {})
+```
+
+**Returns:** Price version, launch prices by preset, runtime prices, and environment configuration including delegated-budget settings.
 
 ### Mutations
 
-#### billing.topUpWithX402
-
-Top up credits via x402 payment.
-
-```ts
-const result = await convex.mutation(api.billing.topUpWithX402, {
-  grossUsdCents: 1000,  // $10.00
-})
-```
-
-**Arguments:**
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `grossUsdCents` | number | Yes | Amount in cents |
-
-**Returns:** Payment configuration for x402 flow.
-
 #### billing.createDelegatedBudget
 
-Create a delegated budget for onchain spending.
+Create a delegated budget record after the user completes the MetaMask setup flow.
 
 ```ts
 const budget = await convex.mutation(api.billing.createDelegatedBudget, {
+  contractBudgetId: 'budget-123',
   budgetType: 'periodic',
   interval: 'month',
-  configuredAmountUsdCents: 10000,  // $100.00/month
-  network: 'base-sepolia',
+  configuredAmountUsdCents: 10000,
+  remainingAmountUsdCents: 10000,
+  ownerAddress: '0x...',
+  delegatorSmartAccount: '0x...',
+  delegateAddress: '0x...',
+  treasuryAddress: '0x...',
+  delegationJson: '{"signed":"payload"}',
+  delegationHash: '0x...',
+  approvalMode: 'standing',
 })
 ```
 
 **Arguments:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
+| `contractBudgetId` | string | Yes | Onchain budget identifier |
 | `budgetType` | 'fixed' \| 'periodic' | Yes | Budget type |
-| `interval` | 'day' \| 'week' \| 'month' | No | Reset interval (periodic only) |
+| `interval` | 'day' \| 'week' \| 'month' | No | Reset interval for periodic budgets |
 | `configuredAmountUsdCents` | number | Yes | Budget limit |
-| `network` | 'base-sepolia' \| 'base-mainnet' | Yes | Network |
+| `remainingAmountUsdCents` | number | Yes | Initial remaining amount; must start at the full configured amount |
+| `ownerAddress` | string | Yes | Budget owner address |
+| `delegatorSmartAccount` | string | Yes | Smart-account address |
+| `delegateAddress` | string | Yes | Backend delegate address |
+| `treasuryAddress` | string | Yes | BuddyPie treasury address |
+| `delegationJson` | string | Yes | Serialized delegation payload |
+| `delegationHash` | string | Yes | Hash of the delegation payload |
+| `delegationExpiresAt` | number | No | Delegation expiry timestamp |
+| `approvalMode` | 'exact' \| 'standing' | Yes | Approval mode used during setup |
+| `approvalTxHash` | string | No | Approval transaction hash |
+| `createTxHash` | string | No | Budget creation transaction hash |
 
-**Returns:** Delegation payload for MetaMask signing.
+**Returns:** Stored delegated-budget record.
+
+#### billing.applySubscriptionCreditGrant
+
+Apply a Clerk subscription snapshot and grant credits when the subscription period is eligible.
+
+```ts
+const result = await convex.mutation(api.billing.applySubscriptionCreditGrant, {
+  clerkSubscriptionId: 'sub_123',
+  clerkSubscriptionItemId: 'si_123',
+  status: 'active',
+  planSlug: 'pro',
+  planPeriod: 'month',
+  periodStart: 1710000000000,
+})
+```
+
+**Returns:** The updated account, the stored subscription snapshot, whether a new grant was applied, and the resulting grant record when one exists.
+
+#### billing.syncClerkSubscriptionByClerkUserId
+
+Sync a Clerk subscription snapshot for the current user by Clerk user ID.
+
+This is primarily an internal billing-sync function used by the verified Clerk webhook handler.
+
+#### billing.holdCredits / billing.captureCreditHold / billing.releaseCreditHold
+
+These wallet mutations implement the internal credit hold lifecycle.
+
+- `holdCredits` reserves wallet balance
+- `captureCreditHold` converts a hold into a finalized charge
+- `releaseCreditHold` returns a hold to available balance
+
+They are part of the shared-wallet billing flow, not the x402 direct-payment flow.
+
+#### billing.recordX402DirectCharge
+
+This mutation records a finalized x402 charge after settlement on an authenticated `/api/x402/...` route.
+
+## x402 HTTP Routes
+
+x402 is implemented as authenticated server routes, not as a `billing.topUpWithX402` Convex mutation.
+
+Current route surface:
+
+- `POST /api/x402/sandboxes/create`
+- `POST /api/x402/sandboxes/$sandboxId/restart`
+- `POST /api/x402/sandboxes/$sandboxId/preview`
+- `POST /api/x402/sandboxes/$sandboxId/ssh`
+- `POST /api/x402/sandboxes/$sandboxId/web-terminal`
+
+These routes:
+
+- return `402 Payment Required` when the payment header is missing or invalid
+- verify and settle x402 payments against the configured facilitator
+- record finalized charges through `api.billing.recordX402DirectCharge`
 
 ## User Functions
 
 ### Queries
 
-#### user.getCurrent
+#### user.current
 
 Get the current user record.
 
 ```ts
-const user = await convex.query(api.user.getCurrent, {})
+const user = await convex.query(api.user.current, {})
+```
+
+**Returns:** User record or null if not authenticated.
+
+#### user.profile
+
+Get the current user profile record.
+
+```ts
+const profile = await convex.query(api.user.profile, {})
 ```
 
 **Returns:** User record or null if not authenticated.
 
 ### Mutations
 
-#### user.upsert
+#### user.ensureCurrentUser
 
-Create or update user from Clerk authentication.
+Create or refresh the current user record from the authenticated Clerk identity.
 
 ```ts
-const user = await convex.mutation(api.user.upsert, {})
+const user = await convex.mutation(api.user.ensureCurrentUser, {})
 ```
 
 **Returns:** User record.
@@ -420,7 +493,7 @@ const option = resolveOpenCodeModelOption({
   provider: 'openrouter',
   model: 'minimax/minimax-m2.7',
   fallbackProvider: 'venice',
-  fallbackModel: 'zai-org-glm-5',
+  fallbackModel: 'minimax-m27',
 })
 ```
 

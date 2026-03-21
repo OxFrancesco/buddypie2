@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { convexQuery } from '@convex-dev/react-query'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import {
@@ -7,8 +7,9 @@ import {
   useSuspenseQuery,
 } from '@tanstack/react-query'
 import { api } from 'convex/_generated/api'
-import type { ChangeEvent, FormEvent } from 'react'
+import type { ChangeEvent, FocusEvent, FormEvent } from 'react'
 import { DeleteSandboxModal } from '~/components/delete-sandbox-modal'
+import { KickoffPromptAckModal } from '~/components/kickoff-prompt-ack-modal'
 import { PaymentMethodToggle } from '~/components/payment-method-toggle'
 import { SandboxCard } from '~/components/sandbox-card'
 import { Alert, AlertDescription } from '~/components/ui/alert'
@@ -38,6 +39,7 @@ import {
   isX402SandboxPaymentMethod,
   type SandboxPaymentMethod,
 } from '~/lib/sandboxes'
+import { isKickoffPromptAckValid } from '~/lib/kickoff-prompt-ack'
 import { cn } from '~/lib/utils'
 
 type X402SandboxActionResult = {
@@ -104,6 +106,9 @@ function DashboardRoute() {
   const [deleteModalSandboxId, setDeleteModalSandboxId] = useState<
     string | null
   >(null)
+  const [kickoffAckModalOpen, setKickoffAckModalOpen] = useState(false)
+  const kickoffTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const skipNextKickoffAckRef = useRef(false)
   const githubReposQueryKey = [
     'github',
     'recent-repos',
@@ -130,8 +135,6 @@ function DashboardRoute() {
   const isRefreshingGithubRepos = githubReposQuery.isFetching
   const githubAlertMessage = githubPickerError ?? githubReposError
   const selectedPreset = getOpenCodeAgentPreset(agentPresetId)
-  const selectedLaunchPriceUsdCents =
-    pricingCatalog.launchPricesUsdCentsByAgentPreset[agentPresetId] ?? 0
 
   async function refreshDashboard() {
     await Promise.all([
@@ -200,6 +203,26 @@ function DashboardRoute() {
       setBranch((currentBranch) => currentBranch || matchedRepo.defaultBranch)
       void loadGithubBranchesForRepo(matchedRepo)
     }
+  }
+
+  function handleKickoffPromptFocus(event: FocusEvent<HTMLTextAreaElement>) {
+    if (skipNextKickoffAckRef.current) {
+      skipNextKickoffAckRef.current = false
+      return
+    }
+    if (isKickoffPromptAckValid()) return
+
+    event.currentTarget.blur()
+    setKickoffAckModalOpen(true)
+  }
+
+  function handleKickoffAcknowledged() {
+    skipNextKickoffAckRef.current = true
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        kickoffTextareaRef.current?.focus()
+      })
+    })
   }
 
   function handleRepoUrlChange(event: ChangeEvent<HTMLInputElement>) {
@@ -307,22 +330,12 @@ function DashboardRoute() {
       <section>
         <Card className="border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]">
           <CardHeader>
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <CardTitle className="text-2xl font-black uppercase sm:text-3xl">
-                  Launch Workspace
-                </CardTitle>
-                <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
-                  Choose an agent preset and a repository to launch a workspace.
-                </p>
-              </div>
-              <Badge
-                variant="outline"
-                className="border-2 border-foreground font-bold uppercase tracking-widest"
-              >
-                Launch {formatUsdCents(selectedLaunchPriceUsdCents)}
-              </Badge>
-            </div>
+            <CardTitle className="text-2xl font-black uppercase sm:text-3xl">
+              Launch Workspace
+            </CardTitle>
+            <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
+              Choose an agent preset and a repository to launch a workspace.
+            </p>
           </CardHeader>
 
           <CardContent>
@@ -372,7 +385,7 @@ function DashboardRoute() {
                           variant={isSelected ? 'secondary' : 'outline'}
                           className="border-2 border-foreground font-bold uppercase tracking-widest"
                         >
-                          {formatUsdCents(presetPrice)}
+                          Launch {formatUsdCents(presetPrice)}
                         </Badge>
                       </div>
                     </button>
@@ -390,102 +403,101 @@ function DashboardRoute() {
                     setFormError(null)
                     setPaymentMethod(nextValue)
                   }}
-                  creditsDescription={`Spend ${formatUsdCents(selectedLaunchPriceUsdCents)} from your shared wallet.`}
-                  x402Description={`Settle ${formatUsdCents(selectedLaunchPriceUsdCents)} directly on ${billingSummary.wallet.fundingNetwork}.`}
-                  delegatedBudgetDescription={`Spend ${formatUsdCents(selectedLaunchPriceUsdCents)} from your delegated budget.`}
                 />
               </div>
 
-              <div className="flex flex-col gap-2">
-                <label
-                  htmlFor="repo-url"
-                  className="text-[10px] font-black uppercase tracking-widest"
-                >
-                  Repository URL
-                </label>
-                <Input
-                  id="repo-url"
-                  type="url"
-                  required
-                  list={
-                    githubRepos.length > 0 ? 'github-repo-options' : undefined
-                  }
-                  value={repoUrl}
-                  onChange={handleRepoUrlChange}
-                  placeholder="https://github.com/owner/repo.git"
-                  className="border-2 border-foreground bg-background font-mono text-sm shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
-                />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-4 sm:items-start sm:gap-4">
+                <div className="flex min-w-0 flex-col gap-2 sm:col-span-3">
+                  <label
+                    htmlFor="repo-url"
+                    className="text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Repository URL
+                  </label>
+                  <Input
+                    id="repo-url"
+                    type="url"
+                    required
+                    list={
+                      githubRepos.length > 0 ? 'github-repo-options' : undefined
+                    }
+                    value={repoUrl}
+                    onChange={handleRepoUrlChange}
+                    placeholder="https://github.com/owner/repo.git"
+                    className="border-2 border-foreground bg-background font-mono text-sm shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
+                  />
 
-                {github.connected ? (
-                  <div className="flex flex-col gap-2">
+                  {github.connected ? (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-xs text-muted-foreground">
+                        {github.message}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            void handleRefreshGithubRepos()
+                          }}
+                          disabled={isRefreshingGithubRepos}
+                          className="border-2 border-foreground text-xs font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                        >
+                          {isLoadingGithubRepos
+                            ? 'Fetching latest repos...'
+                            : isRefreshingGithubRepos
+                              ? 'Refreshing...'
+                              : 'Refresh repos'}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          {isLoadingGithubRepos
+                            ? 'Loading your latest 10 repos.'
+                            : githubRepos.length > 0
+                              ? `${githubRepos.length} recent repo${githubRepos.length === 1 ? '' : 's'} cached until refresh.`
+                              : 'No recent GitHub repos found.'}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
                     <p className="text-xs text-muted-foreground">
                       {github.message}
                     </p>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          void handleRefreshGithubRepos()
-                        }}
-                        disabled={isRefreshingGithubRepos}
-                        className="border-2 border-foreground text-xs font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
-                      >
-                        {isLoadingGithubRepos
-                          ? 'Fetching latest repos...'
-                          : isRefreshingGithubRepos
-                            ? 'Refreshing...'
-                            : 'Refresh repos'}
-                      </Button>
-                      <p className="text-xs text-muted-foreground">
-                        {isLoadingGithubRepos
-                          ? 'Loading your latest 10 repos.'
-                          : githubRepos.length > 0
-                            ? `${githubRepos.length} recent repo${githubRepos.length === 1 ? '' : 's'} cached until refresh.`
-                            : 'No recent GitHub repos found.'}
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    {github.message}
-                  </p>
-                )}
-              </div>
+                  )}
+                </div>
 
-              <div className="flex flex-col gap-2">
-                <label
-                  htmlFor="branch"
-                  className="text-[10px] font-black uppercase tracking-widest"
-                >
-                  Base Branch
-                </label>
-                <Input
-                  id="branch"
-                  type="text"
-                  list={
-                    githubBranches.length > 0
-                      ? 'github-branch-options'
-                      : undefined
-                  }
-                  value={branch}
-                  onChange={(event) => {
-                    setFormError(null)
-                    setBranch(event.target.value)
-                  }}
-                  placeholder="main"
-                  className="border-2 border-foreground bg-background font-mono text-sm shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
-                />
-                <p className="text-xs text-muted-foreground">
-                  {isLoadingGithubBranches
-                    ? 'Fetching branches...'
-                    : selectedGithubRepoFullName && githubBranches.length > 0
-                      ? `${githubBranches.length} branch${githubBranches.length === 1 ? '' : 'es'} from ${selectedGithubRepoFullName}.`
-                      : 'Leave blank for the default branch.'}{' '}
-                  BuddyPie clones this branch, then immediately creates a
-                  dedicated working branch for the agent.
-                </p>
+                <div className="flex min-w-0 flex-col gap-2 sm:col-span-1">
+                  <label
+                    htmlFor="branch"
+                    className="text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Base Branch
+                  </label>
+                  <Input
+                    id="branch"
+                    type="text"
+                    list={
+                      githubBranches.length > 0
+                        ? 'github-branch-options'
+                        : undefined
+                    }
+                    value={branch}
+                    onChange={(event) => {
+                      setFormError(null)
+                      setBranch(event.target.value)
+                    }}
+                    placeholder="main"
+                    className="border-2 border-foreground bg-background font-mono text-xs shadow-[2px_2px_0_var(--foreground)] focus-visible:shadow-none"
+                  />
+                  <p className="text-[11px] leading-snug text-muted-foreground">
+                    {isLoadingGithubBranches
+                      ? 'Fetching branches...'
+                      : selectedGithubRepoFullName && githubBranches.length > 0
+                        ? `${githubBranches.length} branch${githubBranches.length === 1 ? '' : 'es'} from ${selectedGithubRepoFullName}.`
+                        : 'Leave blank for the default branch.'}{' '}
+                    BuddyPie clones this branch, then immediately creates a
+                    dedicated working branch for the agent.
+                  </p>
+                </div>
               </div>
 
               <div className="flex flex-col gap-2">
@@ -496,8 +508,10 @@ function DashboardRoute() {
                   Kickoff Prompt
                 </label>
                 <Textarea
+                  ref={kickoffTextareaRef}
                   id="kickoff-prompt"
                   value={initialPrompt}
+                  onFocus={handleKickoffPromptFocus}
                   onChange={(event) => {
                     setFormError(null)
                     setInitialPrompt(event.target.value)
@@ -559,9 +573,6 @@ function DashboardRoute() {
                     ? 'Launching...'
                     : `Create sandbox with ${formatSandboxPaymentMethod(paymentMethod)} →`}
                 </Button>
-                <p className="text-xs text-muted-foreground">
-                  Launch cost: {formatUsdCents(selectedLaunchPriceUsdCents)}.
-                </p>
               </div>
             </form>
           </CardContent>
@@ -614,6 +625,12 @@ function DashboardRoute() {
           </div>
         )}
       </section>
+
+      <KickoffPromptAckModal
+        open={kickoffAckModalOpen}
+        onOpenChange={setKickoffAckModalOpen}
+        onAcknowledged={handleKickoffAcknowledged}
+      />
 
       <DeleteSandboxModal
         open={deleteModalSandboxId !== null}

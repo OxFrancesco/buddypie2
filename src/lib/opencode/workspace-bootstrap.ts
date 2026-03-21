@@ -118,6 +118,14 @@ function buildWorkspaceBootstrapLines(
   return lines
 }
 
+function buildDocsAppPackageManagerGuidance(
+  packageManager: string | undefined,
+) {
+  const docsPackageManager = packageManager?.trim() || 'npm'
+
+  return `Use ${docsPackageManager} for install, dev, preview, typecheck, and build commands inside the docs app.`
+}
+
 export function buildWorkspaceBootstrapInstructions(
   context?: WorkspaceBootstrapRuntimeContext,
 ) {
@@ -134,7 +142,7 @@ export function buildWorkspaceBootstrapInstructions(
     '',
     'Use the primary repo as the source of truth for product behavior and project-specific facts.',
     'Use the Fumadocs reference repo as the source of truth for framework structure, conventions, and examples.',
-    'Use Bun for install, dev, and build commands inside the docs app.',
+    buildDocsAppPackageManagerGuidance(context.packageManager),
   ].join('\n')
 }
 
@@ -150,6 +158,8 @@ export function buildWorkspaceBootstrapPromptPrefix(
     '',
     ...buildWorkspaceBootstrapLines(context),
     '',
-    'Use the target repo for project truth, use the Fumadocs reference repo for framework truth, and use Bun inside the docs app.',
+    `Use the target repo for project truth, use the Fumadocs reference repo for framework truth, and use ${
+      context.packageManager?.trim() || 'npm'
+    } inside the docs app.`,
   ].join('\n')
 }

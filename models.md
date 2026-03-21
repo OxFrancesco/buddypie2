@@ -1,8 +1,7 @@
 # Model Providers And Models
 
-This file is the source of truth for the OpenCode provider and model options
-BuddyPie exposes in the dashboard. Keep it aligned with
-`src/lib/opencode/presets.ts`, `README.md`, and `AGENTS.md`.
+This file is the source of truth for the OpenCode model providers and model
+options BuddyPie exposes in the dashboard.
 
 ## Current Provider And Model Options
 
@@ -11,7 +10,7 @@ BuddyPie exposes in the dashboard. Keep it aligned with
 - Provider id: `openrouter`
 - Required env: `OPENROUTER_API_KEY`
 - Current model option: `minimax/minimax-m2.7`
-- Dashboard model option id: `openrouter-minimax-m2.7`
+- Where it is selectable: the dashboard model selector
 
 ### Venice AI
 
@@ -20,19 +19,12 @@ BuddyPie exposes in the dashboard. Keep it aligned with
 - Current model options:
   - `openai-gpt-53-codex`
   - `claude-sonnet-4-6`
-  - `zai-org-glm-5`
-- Dashboard model option ids:
-  - `venice-gpt-5.3-codex`
-  - `venice-claude-sonnet-4.6`
-  - `venice-glm-5`
-
-The selected provider/model controls which OpenCode provider and model BuddyPie
-starts inside the sandbox at runtime.
+  - `minimax-m27`
+- Where it is selectable: the dashboard model selector
 
 ## Workflow Presets
 
-Workflow presets are separate from provider/model selection. BuddyPie currently
-ships these presets:
+Workflow presets are separate from provider/model selection.
 
 - `general-engineer`
 - `frontend-builder`
@@ -42,32 +34,34 @@ Current preset defaults:
 
 - `general-engineer` -> OpenRouter `minimax/minimax-m2.7`
 - `frontend-builder` -> OpenRouter `minimax/minimax-m2.7`
-- `docs-writer` -> Venice `zai-org-glm-5`
+- `docs-writer` -> Venice `minimax-m27`
 
 The selected workflow preset controls instructions, skills, workspace
 bootstrap, and kickoff behavior.
 
-## Kickoff Default Behavior
+Kickoff default behavior:
 
-- Leaving the dashboard kickoff field blank uses the preset's built-in
-  `starterPrompt`.
-- Every shipping preset is expected to keep a non-empty `starterPrompt` so
-  BuddyPie can always seed the first OpenCode session with a meaningful task.
+- leaving the dashboard kickoff field blank uses the preset starter prompt
+- every current preset, including `general-engineer`, is expected to keep a
+  non-empty starter prompt so BuddyPie can seed the first OpenCode session
 
-## Delivery Workflow Default Behavior
+Delivery workflow default behavior:
 
-- Every shipping preset appends shared delivery requirements to the managed
-  agent prompt and instructions.
-- Those requirements tell the agent to use Bun for Node and TypeScript repo
-  commands.
-- BuddyPie checks out a dedicated `codex/...` working branch before the session
-  starts, and the agent is expected to stay on that branch unless the user
-  explicitly asks to switch away from it.
-- Before handoff, the agent should run the relevant build command plus a
+- every current preset appends shared delivery requirements to the managed
+  agent prompt and instructions
+- those requirements tell the agent to use Bun for Node and TypeScript repo
+  commands
+- BuddyPie also checks out a dedicated `codex/...` working branch before the
+  session starts, and the agent is expected to stay on that branch unless the
+  user explicitly asks to switch away from it
+- before handoff, the agent should run the relevant build command plus a
   dedicated typecheck command, or the closest validation command that covers
-  types when no standalone typecheck exists.
-- When GitHub auth is available in the sandbox, the agent should commit and
-  push the current branch so a PR can be opened from that branch.
+  types when no standalone typecheck exists
+- when GitHub auth is available in the sandbox, the agent should commit and
+  push the current branch so a PR can be opened from that branch
+
+The selected provider/model controls which OpenCode provider and model are
+used at runtime.
 
 ## Where To Change Provider Or Model Options
 

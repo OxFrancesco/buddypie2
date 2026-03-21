@@ -24,7 +24,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
       resolveOpenCodeLaunchConfig({
         agentPresetId: 'docs-writer',
         agentProvider: 'venice',
-        agentModel: 'zai-org-glm-5',
+        agentModel: 'minimax-m27',
       }),
     ).toThrow(
       'VENICE_API_KEY or VENICE_INFERENCE_KEY is not configured on the server.',
@@ -38,13 +38,13 @@ describe('resolveOpenCodeLaunchConfig', () => {
       resolveOpenCodeLaunchConfig({
         agentPresetId: 'docs-writer',
         agentProvider: 'venice',
-        agentModel: 'zai-org-glm-5',
+        agentModel: 'minimax-m27',
       }),
     ).toMatchObject({
       preset: {
         id: 'docs-writer',
         provider: 'venice',
-        model: 'zai-org-glm-5',
+        model: 'minimax-m27',
       },
       launchEnvironment: {
         VENICE_API_KEY: 'test-venice-key',
@@ -60,7 +60,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
       resolveOpenCodeLaunchConfig({
         agentPresetId: 'docs-writer',
         agentProvider: 'venice',
-        agentModel: 'zai-org-glm-5',
+        agentModel: 'minimax-m27',
       }),
     ).toMatchObject({
       launchEnvironment: {

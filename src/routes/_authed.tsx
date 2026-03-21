@@ -55,19 +55,16 @@ function AuthedLayout() {
             />
             <span>BuddyPie</span>
           </Link>
-          <div className="flex shrink-0 items-center gap-4">
-            <Link
-              to="/profile"
-              className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors hover:text-foreground [&.active]:text-foreground"
-            >
-              Profile
-            </Link>
+          <Link
+            to="/profile"
+            className="group flex shrink-0 items-center gap-2 rounded-full border-2 border-foreground bg-background py-1 pl-1 pr-3 shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+          >
             <UserButton
               appearance={{
                 elements: {
-                  userButtonBox: 'flex items-center rounded-full',
+                  userButtonBox: 'flex items-center',
                   userButtonTrigger:
-                    'rounded-full overflow-hidden border-2 border-foreground shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none transition-all',
+                    'rounded-full overflow-hidden border-0 shadow-none pointer-events-none',
                   userButtonPopoverFooter: { display: 'none' },
                   userButtonPopoverFooterPages: { display: 'none' },
                   userButtonPopoverAction: { display: 'none' },
@@ -93,7 +90,10 @@ function AuthedLayout() {
                 },
               }}
             />
-          </div>
+            <span className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors group-hover:text-foreground">
+              Wallet
+            </span>
+          </Link>
         </div>
       </header>
 

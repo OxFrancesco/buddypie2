@@ -1,0 +1,449 @@
+---
+title: Agent Payments Deep Dive
+description: Detailed explanation of how BuddyPie charges for agent actions and how each payment path works
+icon: Wallet
+---
+
+## What Users Can Pay With Today
+
+BuddyPie currently implements exactly three user-facing payment methods for agent actions:
+
+- `credits`
+- `x402`
+- `delegated_budget`
+
+These methods cover sandbox launch plus the billable runtime actions that BuddyPie exposes today:
+
+- `sandbox_launch`
+- `preview_boot`
+- `ssh_access`
+- `web_terminal`
+
+Anything outside that list should be treated as out of scope for the current implementation.
+
+## How BuddyPie Prices Agent Actions
+
+BuddyPie prices actions in whole USD cents and stores the active price version in `unitPriceVersion`.
+
+Current configured prices:
+
+| Billing event | Price |
+|---------------|-------|
+| `sandbox_launch` for `general-engineer` | `250` cents |
+| `sandbox_launch` for `frontend-builder` | `275` cents |
+| `sandbox_launch` for `docs-writer` | `200` cents |
+| `preview_boot` | `35` cents |
+| `ssh_access` | `15` cents |
+| `web_terminal` | `15` cents |
+
+The pricing surface is queryable through:
+
+```ts
+const pricing = await convex.query(api.billing.pricingCatalog, {})
+```
+
+That catalog is the source of truth for:
+
+- price version
+- launch pricing by preset
+- runtime pricing
+- active billing environment metadata
+
+## Payment Method Vs Payment Rail
+
+BuddyPie uses two related but different concepts.
+
+### User-facing payment methods
+
+These are the options the user selects in the product:
+
+- `credits`
+- `x402`
+- `delegated_budget`
+
+### Internal payment rails
+
+These are the rails written into the ledger and charge records:
+
+- `clerk_credit`
+- `x402_direct`
+- `metamask_delegated`
+- `migration`
+- `manual_test`
+
+The important consequence is that `credits` is not one rail. It is a wallet experience backed by whichever internal credit rail the system chooses for a hold.
+
+## Credits
+
+### What It Is
+
+`credits` is the shared BuddyPie wallet flow. The wallet is denominated in USD cents and stores:
+
+- `availableUsdCents`
+- `heldUsdCents`
+- `lifetimeCreditedUsdCents`
+- `lifetimeSpentUsdCents`
+
+The user can inspect the current wallet and recent billing history with:
+
+```ts
+const summary = await convex.query(api.billing.dashboardSummary, {})
+```
+
+### How Credits Enter The Wallet
+
+Today, the main implemented funding source for real users is Clerk subscription credit grants.
+
+When a subscription is active and maps to a configured plan slug and billing period:
+
+1. Clerk sends a billing webhook.
+2. BuddyPie verifies the webhook signature.
+3. BuddyPie normalizes the webhook payload.
+4. BuddyPie attempts a Clerk read-back with `getUserBillingSubscription`.
+5. If the authoritative Clerk response is available, BuddyPie uses that snapshot instead of trusting the webhook payload alone.
+6. BuddyPie stores a `clerkSubscriptionSnapshots` record.
+7. BuddyPie grants credits exactly once per subscription item and billing period using an idempotency key.
+8. BuddyPie inserts a `subscriptionCreditGrants` record and a `creditLedgerEntries` entry with the `clerk_credit` rail.
+
+There are also internal-only rails:
+
+- `migration` for balances moved from the legacy billing model
+- `manual_test` for test-only credits
+
+### How A Credit-Funded Charge Works
+
+For `credits`, BuddyPie bills through the hold/capture flow:
+
+1. BuddyPie computes the event price.
+2. BuddyPie checks `account.availableUsdCents`.
+3. BuddyPie creates a `creditHolds` record.
+4. BuddyPie moves the amount from available balance to held balance.
+5. BuddyPie performs the protected action.
+6. If the action succeeds and should be billed, BuddyPie captures the hold into `billingCharges`.
+7. If the action fails or should not bill, BuddyPie releases the hold and moves the funds back to available balance.
+
+This gives BuddyPie a clear lifecycle for in-flight actions:
+
+- hold created
+- hold captured
+- hold released
+- hold expired
+
+### Rail Selection Behavior
+
+When BuddyPie places a credit hold, it chooses one source rail for attribution.
+
+Current selection order:
+
+1. `clerk_credit`
+2. `manual_test`
+3. `migration`
+
+BuddyPie first looks for a rail whose currently summarized available balance fully covers the hold amount. If none does, it falls back to the first preferred rail that still has any positive balance. If no preferred rail has a positive balance, it falls back to `migration`.
+
+This means the wallet can behave like a pooled balance even though the hold is still tagged with one rail.
+
+### Failure And Retry Behavior
+
+- If available wallet balance is too low, BuddyPie rejects the action before placing the hold.
+- If the action throws after the hold is created, BuddyPie tries to release the hold in a best-effort cleanup step.
+- If the action returns a result that should not bill, BuddyPie releases the hold instead of capturing it.
+- Capture and release both use explicit idempotency keys or hold identity to avoid obvious double-processing.
+
+### Best-Practice Notes For Credits
+
+Implemented protections:
+
+- Whole-cent validation for amounts
+- explicit idempotency keys on holds and captures
+- immutable charge records once written
+- ledger entries for every balance movement
+
+Current caveat:
+
+- Hold attribution is single-rail even when the user’s usable balance is effectively spread across multiple rails. That can misstate which rail funded a hold when no one rail fully covered the amount and BuddyPie fell back to “first positive rail”.
+
+## x402
+
+### What It Is
+
+`x402` is BuddyPie’s direct pay-per-action wallet path. It is not a wallet top-up flow in the current codebase.
+
+The user pays for a single action by sending an x402 payment on the configured Base network. The finalized charge is recorded on the `x402_direct` rail.
+
+### Where It Is Used
+
+BuddyPie currently exposes x402 on authenticated server routes for:
+
+- sandbox creation
+- sandbox restart
+- preview boot
+- SSH access
+- web terminal access
+
+These routes live under `/api/x402/...`.
+
+### End-To-End Flow
+
+At a high level:
+
+1. The client calls an authenticated x402 route.
+2. BuddyPie calculates the price for the requested action.
+3. BuddyPie calls `requireX402Payment`.
+4. If no valid payment header exists, BuddyPie returns `402 Payment Required`.
+5. The response includes the payment requirements:
+   - network
+   - asset
+   - amount
+   - `payTo`
+   - timeout
+6. The client pays with USDC and retries the request with the payment payload.
+7. BuddyPie verifies the payment against the configured x402 facilitator.
+8. BuddyPie performs the protected action.
+9. After a successful action, BuddyPie settles the x402 payment through the facilitator.
+10. BuddyPie records a `billingCharges` record on the `x402_direct` rail and writes a ledger entry.
+
+### What The 402 Response Represents
+
+The `402 Payment Required` response is not a generic error. It is part of the protocol.
+
+BuddyPie packages these details into the response:
+
+- resource URL
+- resource description
+- expected network
+- expected USDC asset
+- exact amount in atomic units
+- destination address
+- payment timeout
+
+### Settlement Timing
+
+The current implementation verifies x402 before the protected action, but it records settlement only after the action succeeds.
+
+That matters operationally:
+
+- verification happens before sandbox creation or runtime action
+- settlement and charge recording happen afterward
+- there is a post-action window where the protected action may already have happened but settlement recording can still fail
+
+This is an important audit caveat, not a reason to describe the implementation incorrectly.
+
+### Failure And Retry Behavior
+
+- Missing or invalid payment headers return a fresh `402 Payment Required` response.
+- Facilitator verification failures block the action.
+- If the action fails before settlement, BuddyPie returns an error and no charge record is written.
+- If the action succeeds but settlement or charge recording fails afterward, there is a partial-completion risk window that should be handled as an operational follow-up.
+
+### Best-Practice Notes For x402
+
+Implemented protections:
+
+- payment requirement generation is environment-aware
+- verification and settlement are delegated to the configured facilitator
+- charge recording uses an idempotency key derived from the settled transaction reference
+- the route still requires normal BuddyPie authentication and sandbox ownership checks
+
+Current caveats:
+
+- The protected action runs after payment verification but before final settlement recording.
+- The automated test coverage in this repo is noticeably lighter for x402 than for delegated-budget flows.
+
+## Delegated Budget
+
+### What It Is
+
+`delegated_budget` is BuddyPie’s MetaMask smart-account path. The user preapproves a spending budget, then BuddyPie settles eligible agent actions onchain against that budget.
+
+Finalized charges are recorded on the `metamask_delegated` rail, and onchain settlements are additionally stored in `delegatedBudgetSettlements`.
+
+### Budget Creation Model
+
+A delegated budget stores:
+
+- budget status
+- budget type: `fixed` or `periodic`
+- interval for periodic budgets: `day`, `week`, or `month`
+- configured amount and remaining amount
+- owner address
+- delegator smart-account address
+- backend delegate address
+- treasury address
+- delegation payload and hash
+
+New budgets must start with the full configured amount still remaining.
+
+### End-To-End Creation Flow
+
+1. The user chooses delegated budget in the UI.
+2. BuddyPie prepares the delegation payload and contract budget metadata.
+3. The user signs with MetaMask.
+4. BuddyPie stores the budget only if the signed payload passes validation.
+
+BuddyPie refuses the budget when:
+
+- another active budget already exists for the user
+- delegated budgets are not configured in the current environment
+- the signed delegate address does not match BuddyPie’s configured backend delegate
+- the signed treasury address does not match BuddyPie’s configured treasury
+- the delegation has already expired
+
+### Smart-Account Requirements
+
+BuddyPie assumes the smart account can actually execute settlements.
+
+Operationally that means:
+
+- the smart account must be deployed when required
+- it must hold enough USDC for the requested spend
+- it must have enough native gas or supported bundler configuration for the user-operation path
+
+The delegated-budget client and server code includes health checks for these conditions.
+
+### How A Delegated-Budget Charge Works
+
+For launch or runtime billing:
+
+1. BuddyPie checks that an active delegated budget exists.
+2. BuddyPie verifies that the requested spend fits within the remaining allowance.
+3. BuddyPie performs the protected action, depending on the flow.
+4. BuddyPie submits onchain settlement against the smart account.
+5. BuddyPie records:
+   - a `billingCharges` row on `metamask_delegated`
+   - a `delegatedBudgetSettlements` row with settlement identifiers and transaction hash
+6. BuddyPie updates the budget’s remaining amount and settlement timestamps.
+
+### Remaining Budget Updates
+
+After each successful settlement BuddyPie updates:
+
+- `remainingAmountUsdCents`
+- `periodStartedAt`
+- `periodEndsAt`
+- `lastSettlementAt`
+- `lastSettlementTxHash`
+
+Revocation and expiry are also tracked so BuddyPie can reject unusable budgets quickly.
+
+### Best-Practice Notes For Delegated Budgets
+
+Implemented protections:
+
+- active-status checks before use
+- delegate-address validation
+- treasury-address validation
+- delegation-hash validation
+- expiry validation
+- undeployed smart-account detection
+- environment-specific configuration checks
+- production restriction that prevents loading a raw backend private key into the app process
+
+Contract-side protections already reviewed in `contracts/AUDIT_NOTES.md`:
+
+- smart-account-only settlement authority
+- replay protection on settlement IDs
+- treasury and token immutability at the contract level
+- revocation enforcement
+- periodic and fixed-budget allowance enforcement
+
+Current caveat:
+
+- Settlement idempotency is currently attempt-scoped in the runtime layer because the key includes a random UUID. That is acceptable for unique settlement attempts, but it is not the same as a business-action-stable idempotency strategy, so retry semantics should be treated carefully.
+
+## Environment Differences
+
+BuddyPie uses environment-scoped billing configuration.
+
+| Environment | Chain | x402 network | Typical use |
+|-------------|-------|--------------|-------------|
+| `staging` | Base Sepolia (`84532`) | `eip155:84532` | Testing |
+| `production` | Base Mainnet (`8453`) | `eip155:8453` | Live billing |
+
+For x402:
+
+- the USDC asset address changes by environment
+- the `payTo` destination must be configured
+- the facilitator URL can be overridden
+
+For delegated budgets:
+
+- staging may use a local backend private key
+- production explicitly refuses that pattern and requires a dedicated signer service
+
+Relevant production behavior:
+
+- do not load a raw backend EVM private key into the app process
+- use `DB_SIGNER_URL_PROD` instead
+
+## Audit And Best-Practices Review
+
+This section is a documentation audit of the payment implementation in this repo. It is not a substitute for a dedicated external security review.
+
+### Implemented Protections
+
+- Clerk billing webhooks are signature-verified before BuddyPie accepts them.
+- BuddyPie attempts a Clerk read-back and prefers the authoritative subscription snapshot when available.
+- Subscription credit grants are idempotent by subscription item and billing period.
+- Credit holds and direct charges use explicit idempotency keys.
+- Delegated budgets are validated for active status, delegate match, treasury match, expiry, and smart-account deployment.
+- Production delegated-budget settlement refuses raw private-key loading in the app process.
+- The delegated-budget contract already has documented audit notes covering smart-account authority, replay protection, and treasury enforcement.
+
+### Current Gaps And Follow-Ups
+
+- Credit hold attribution is single-rail even when real available wallet value may be pooled across multiple rails.
+- x402 protected actions run after verification but before final settlement recording, so there is a partial-completion window after the action succeeds.
+- Delegated-budget settlement retries are not keyed to a stable business action identifier in the runtime layer.
+- No visible CSP or broader security-header configuration appears in repo code. That should be verified at runtime or in edge infrastructure rather than assumed present or absent.
+- Automated tests are strongest around delegated-budget behavior. Clerk and x402 flows have comparatively lighter direct test coverage.
+
+### What This Audit Did Not Confirm
+
+This documentation pass did not confirm:
+
+- edge/CDN security headers
+- external signer-service hardening
+- facilitator-side x402 guarantees
+- production monitoring and alerting coverage
+
+Those remain operational review items.
+
+## Recommendations
+
+Choose `credits` when:
+
+- the user has an active Clerk-funded wallet balance
+- you want the cleanest hold/capture accounting model
+- you want predictable retries without immediate wallet interaction
+
+Choose `x402` when:
+
+- the user wants direct pay-per-action settlement
+- wallet credits are not the preferred experience
+- per-request USDC payment is acceptable
+
+Choose `delegated_budget` when:
+
+- the user wants repeated agent spending without approving every action
+- the user is willing to set up a MetaMask smart account and delegation flow
+- the operator wants onchain settlement records tied to a preapproved allowance
+
+Avoid describing unsupported behavior:
+
+- x402 is not currently documented truthfully as a wallet top-up rail
+- delegated budgets are not a generic “wallet”; they are a bounded preapproved spend path
+
+## Related Docs
+
+<Cards>
+  <Card title="Billing Overview" href="/docs/billing">
+    Short overview of payment methods and billing records.
+  </Card>
+  <Card title="API Reference" href="/docs/api-reference">
+    Public Convex functions and payment-related route notes.
+  </Card>
+  <Card title="Smart Contracts" href="/docs/contracts">
+    Contract-level delegated-budget settlement details.
+  </Card>
+</Cards>

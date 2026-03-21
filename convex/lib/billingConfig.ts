@@ -84,8 +84,8 @@ export type ClerkSubscriptionStatus = (typeof clerkSubscriptionStatusValues)[num
 
 const launchCostByPreset: Record<string, number> = {
   'general-engineer': 250,
-  'frontend-builder': 275,
-  'docs-writer': 200,
+  'frontend-builder': 250,
+  'docs-writer': 250,
 }
 
 const fixedEventCostsUsdCents: Record<

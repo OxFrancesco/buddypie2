@@ -19,7 +19,7 @@ BuddyPie manages OpenCode presets to configure AI behavior for different work ty
 |-----------|-------|---------------|---------|
 | `general-engineer` | General Engineer | OpenRouter / MiniMax M2.7 | Full-stack development |
 | `frontend-builder` | Frontend Builder | OpenRouter / MiniMax M2.7 | UI and styling work |
-| `docs-writer` | Docs Writer | Venice / GLM 5 | Documentation |
+| `docs-writer` | Docs Writer | Venice / MiniMax M2.7 | Documentation |
 
 ### General Engineer
 
@@ -63,7 +63,7 @@ Documentation-focused preset for guides, READMEs, and onboarding content.
 
 **Configuration:**
 - Provider: `venice`
-- Model: `zai-org-glm-5`
+- Model: `minimax-m27`
 - Required env: `VENICE_API_KEY`
 
 **Skills:**
@@ -75,7 +75,8 @@ Documentation-focused preset for guides, READMEs, and onboarding content.
 **Workspace Bootstrap:**
 - Clones Fumadocs reference to `sources/fumadocs`
 - Scaffolds Fumadocs app in `docs/` or `docs-site/`
-- Uses `tanstack-start` template with Bun
+- Uses `tanstack-start` template with npm for the prepared docs app
+- Verifies docs changes with `npm run types:check`, `npm run build`, and a local docs server before handoff
 
 **Starter Prompt:**
 > Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project.
@@ -113,7 +114,7 @@ Venice provides uncensored AI models with privacy focus.
 |----------|-------|-------------|
 | `openai-gpt-53-codex` | GPT-5.3 Codex | Coding and tool use |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | Large context for analysis |
-| `zai-org-glm-5` | GLM 5 | Docs workflow default |
+| `minimax-m27` | MiniMax M2.7 | Docs workflow default |
 
 **Model ID Format:**
 Venice models use the format `venice/{model}` in the OpenCode config.
@@ -179,7 +180,7 @@ type OpenCodeDocsWorkspaceBootstrap = {
   docsTemplate: 'tanstack-start'  // Fumadocs template
   preferredDocsPath: string  // Preferred docs directory
   fallbackDocsPath: string   // Fallback docs directory
-  packageManager: 'bun'      // Package manager
+  packageManager: 'bun' | 'npm'  // Package manager
 }
 ```
 
