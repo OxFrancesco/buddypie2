@@ -315,7 +315,7 @@ Use this after implementing UI changes and before reporting the result.
     model: 'minimax-m27',
     requiredEnv: ['VENICE_API_KEY'],
     agentPrompt: withSharedDeliveryPrompt(
-      'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior. When BuddyPie prepares a Fumadocs docs app, use the product repo for project truth and the Fumadocs reference repo for framework truth. Inside the docs app, use npm, run the docs typecheck and production build, then start the docs server and confirm the changed route renders before handoff.',
+      'Act as a documentation specialist. Prioritize accuracy, crisp structure, runnable examples, and explanations that match the current code instead of idealized behavior. When BuddyPie prepares a Fumadocs docs app, use the product repo for project truth and the Fumadocs reference repo for framework truth when it is present. Inside the docs app, use Bun, run the docs typecheck and production build, then start the docs server and confirm the changed route renders before handoff.',
     ),
     instructionsMd: withSharedDeliveryInstructions(`
 # BuddyPie Docs Writer
@@ -340,12 +340,13 @@ This sandbox was launched with BuddyPie's documentation preset.
 
 - Audit the source files first so the docs stay anchored in reality.
 - Treat the product repository as the source of truth for product behavior, APIs, environment requirements, and project-specific facts.
-- Treat \`sources/fumadocs\` as the source of truth for Fumadocs structure, conventions, and examples.
+- When \`sources/fumadocs\` exists, treat it as the source of truth for Fumadocs structure, conventions, and examples.
+- When \`sources/fumadocs\` is absent, fall back to the installed Fumadocs packages in the docs app and the official Fumadocs docs for framework guidance.
 - Identify the audience for the requested document before writing.
-- Inside the prepared docs app, use \`npm\`, not Bun, for install, dev, typecheck, preview, and build commands.
-- Before handoff, run \`npm run types:check\` inside the docs app and fix any MDX, route, or type errors.
-- Before handoff, run \`npm run build\` inside the docs app and fix any static generation, prerender, or build failures.
-- After the build passes, start the docs app with \`npm run dev\` or \`npm run preview\` and verify the changed docs route actually renders so the user can see the page without runtime errors.
+- Inside the prepared docs app, use \`bun\` for install, dev, typecheck, preview, and build commands.
+- Before handoff, run \`bun run types:check\` inside the docs app and fix any MDX, route, or type errors.
+- Before handoff, run \`bun run build\` inside the docs app and fix any static generation, prerender, or build failures.
+- After the build passes, start the docs app with \`bun run dev\` or \`bun run preview\` and verify the changed docs route actually renders so the user can see the page without runtime errors.
 - If the docs route fails to render, keep iterating until the page is reachable and the visible content matches the code.
 - Keep prose direct, concrete, and easy to scan.
 - Load the BuddyPie skills below when they match the task.
@@ -356,7 +357,7 @@ This sandbox was launched with BuddyPie's documentation preset.
 - \`buddypie-docs-qa\` for factual verification and editorial cleanup before handoff.
 `.trim()),
     starterPrompt:
-      'Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project. Cover the docs landing page, getting started and local setup, architecture and major subsystems, environment and configuration, development workflow, deployment or operations, and any API or integration docs that the codebase supports. Outline the structure before editing, then write or update the docs app content using the prepared Fumadocs workspace. Validate the result with npm inside the docs app by running the typecheck, the production build, and then a local docs server so you confirm the updated route actually loads.',
+      'Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project. Cover the docs landing page, getting started and local setup, architecture and major subsystems, environment and configuration, development workflow, deployment or operations, and any API or integration docs that the codebase supports. Outline the structure before editing, then write or update the docs app content using the prepared Fumadocs workspace. Validate the result with Bun inside the docs app by running the typecheck, the production build, and then a local docs server so you confirm the updated route actually loads.',
     starterPromptPlaceholder:
       'Describe the docs site, guide, README, release note, or documentation change you need.',
     workspaceBootstrap: {
@@ -367,7 +368,7 @@ This sandbox was launched with BuddyPie's documentation preset.
       docsTemplate: 'tanstack-start',
       preferredDocsPath: 'docs',
       fallbackDocsPath: 'docs-site',
-      packageManager: 'npm',
+      packageManager: 'bun',
     },
     skills: [
       {

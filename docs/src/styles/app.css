@@ -1,3 +1,9 @@
 @import 'tailwindcss';
 @import 'fumadocs-ui/css/neutral.css';
 @import 'fumadocs-ui/css/preset.css';
+
+.mermaid-diagram svg {
+  display: block;
+  height: auto;
+  max-width: 100%;
+}

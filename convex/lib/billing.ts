@@ -851,6 +851,7 @@ export async function createDelegatedBudget(
     delegatorSmartAccount: string
     delegateAddress: string
     treasuryAddress: string
+    settlementContract: string
     delegationJson: string
     delegationHash: string
     delegationExpiresAt?: number
@@ -879,6 +880,10 @@ export async function createDelegatedBudget(
   )
   requireNonEmptyText(args.delegateAddress, 'Backend delegate address')
   requireNonEmptyText(args.treasuryAddress, 'Delegated-budget treasury address')
+  requireNonEmptyText(
+    args.settlementContract,
+    'Delegated-budget settlement contract address',
+  )
   requireNonEmptyText(args.delegationJson, 'Delegation payload')
   requireNonEmptyText(args.delegationHash, 'Delegation hash')
 
@@ -928,6 +933,15 @@ export async function createDelegatedBudget(
     )
   }
 
+  if (
+    normalizeAddress(args.settlementContract) !==
+    normalizeAddress(delegatedBudgetConfig.settlementContract)
+  ) {
+    throw new ConvexError(
+      'The delegated budget settlement contract does not match the configured BuddyPie settlement contract.',
+    )
+  }
+
   const now = Date.now()
 
   if (
@@ -955,9 +969,7 @@ export async function createDelegatedBudget(
     delegatorSmartAccount: args.delegatorSmartAccount,
     delegateAddress: args.delegateAddress,
     treasuryAddress: args.treasuryAddress,
-    ...(delegatedBudgetConfig.settlementContract
-      ? { settlementContract: delegatedBudgetConfig.settlementContract }
-      : {}),
+    settlementContract: args.settlementContract,
     contractBudgetId: args.contractBudgetId,
     delegationJson: args.delegationJson,
     delegationHash: args.delegationHash,

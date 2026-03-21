@@ -45,6 +45,32 @@ export function delegatedBudgetIntervalToContractEnum(
   }
 }
 
+export function contractEnumToDelegatedBudgetType(value: number) {
+  switch (value) {
+    case 0:
+      return 'fixed' as const
+    case 1:
+      return 'periodic' as const
+    default:
+      throw new Error(`Unsupported delegated-budget type enum ${value}.`)
+  }
+}
+
+export function contractEnumToDelegatedBudgetInterval(value: number) {
+  switch (value) {
+    case 0:
+      return null
+    case 1:
+      return 'day' as const
+    case 2:
+      return 'week' as const
+    case 3:
+      return 'month' as const
+    default:
+      throw new Error(`Unsupported delegated-budget interval enum ${value}.`)
+  }
+}
+
 export function usdCentsToUsdcAtomic(amountUsdCents: number) {
   return BigInt(amountUsdCents) * USDC_ATOMIC_UNITS_PER_USD_CENT
 }

@@ -73,10 +73,11 @@ Documentation-focused preset for guides, READMEs, and onboarding content.
 | `buddypie-docs-qa` | Verify docs against code |
 
 **Workspace Bootstrap:**
-- Clones Fumadocs reference to `sources/fumadocs`
+- In BuddyPie-prepared docs sandboxes, clones Fumadocs reference to `sources/fumadocs`
 - Scaffolds Fumadocs app in `docs/` or `docs-site/`
-- Uses `tanstack-start` template with npm for the prepared docs app
-- Verifies docs changes with `npm run types:check`, `npm run build`, and a local docs server before handoff
+- Uses `tanstack-start` template with Bun for the prepared docs app
+- Falls back to installed Fumadocs packages and the official Fumadocs docs when `sources/fumadocs` is not present
+- Verifies docs changes with `bun run types:check`, `bun run build`, and a local docs server before handoff
 
 **Starter Prompt:**
 > Review the current repository, identify the documentation gaps that matter most, and build a complete Fumadocs docs pass for this project.

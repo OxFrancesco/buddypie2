@@ -273,6 +273,7 @@ export function getDelegatedBudgetEnvironmentConfig() {
 
   return {
     enabled:
+      settlementContract.length > 0 &&
       treasuryAddress.length > 0 &&
       backendDelegateAddress.length > 0 &&
       bundlerUrl.length > 0,

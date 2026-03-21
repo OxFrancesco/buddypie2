@@ -128,11 +128,15 @@ contracts/
 docs/               Fumadocs documentation site
 ```
 
-## Changing providers or models
+## TL;DR
 
-1. Update `src/lib/opencode/presets.ts`.
-2. Update `models.md`.
-3. Update this README.
-4. Update `AGENTS.md`.
-5. Verify the needed env vars are documented and available.
-6. Confirm launch and restart still preserve the intended provider/model in Convex.
+BuddyPie gives you a one-click AI coding session on any repo. Pick a repo, pick a preset, hit launch. The sandbox boots, the agent reads the codebase, does the work, and pushes a branch you can PR from.
+
+What makes it worth your time:
+
+- The agent actually runs in an isolated cloud sandbox with real tooling, not a chat window pretending to write code.
+- Three presets (general engineering, frontend, docs) that ship with real instructions, skills, and workspace bootstrapping instead of a generic "you are a helpful assistant" prompt.
+- You choose the model. Swap between OpenRouter and Venice, between MiniMax, GPT-5.3 Codex, and Claude Sonnet 4.6. The preset and the model are independent knobs.
+- Billing that doesn't get in the way. Subscription credits for teams that want a monthly budget, x402 micropayments for pay-as-you-go, and onchain delegated budgets for people who want to approve a spending cap once and forget about it.
+- The docs-writer preset doesn't just generate markdown. It scaffolds a full Fumadocs site, cross-references the actual source code, typechecks, builds, and confirms the pages render before it calls the job done.
+- Every session lands on a dedicated branch. The agent stays on it, pushes when done, and you open a PR when you're ready.

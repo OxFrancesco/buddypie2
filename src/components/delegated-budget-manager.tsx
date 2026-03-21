@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, AlertDescription } from '~/components/ui/alert'
+import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert'
 import { Button } from '~/components/ui/button'
 import { Input } from '~/components/ui/input'
 import {
@@ -37,7 +37,10 @@ type DelegatedBudgetRecord = {
   contractBudgetId: string
   delegationJson: string
   settlementContract?: string
+  approvalTxHash?: string
+  createTxHash?: string
   lastSettlementTxHash?: string
+  revokeTxHash?: string
 } | null
 
 type DelegatedBudgetEnvironment = {
@@ -75,6 +78,10 @@ function getDelegatedBudgetConfigurationError(
     missingLabels.push('treasury address')
   }
 
+  if (!environment.delegatedBudget.settlementContract.trim()) {
+    missingLabels.push('settlement contract')
+  }
+
   if (!environment.delegatedBudget.backendDelegateAddress.trim()) {
     missingLabels.push('backend delegate address')
   }
@@ -104,11 +111,50 @@ function formatDateTime(value?: string | number | null) {
   return parsedDate.toLocaleString()
 }
 
+function getTransactionExplorerHref(chainId: number, txHash: string) {
+  const normalizedHash = txHash.trim()
+
+  if (!normalizedHash) {
+    return null
+  }
+
+  switch (chainId) {
+    case 8453:
+      return `https://basescan.org/tx/${normalizedHash}`
+    case 84532:
+      return `https://sepolia.basescan.org/tx/${normalizedHash}`
+    default:
+      return null
+  }
+}
+
+function formatHash(hash?: string | null) {
+  if (!hash) {
+    return null
+  }
+
+  return `${hash.slice(0, 10)}...${hash.slice(-8)}`
+}
+
+type DelegatedBudgetOutcome = {
+  variant: 'default' | 'destructive'
+  title: string
+  message: string
+  detail?: string
+  approvalTxHash?: string
+  createTxHash?: string
+  revokeTxHash?: string
+}
+
 const stepLabels: Record<DelegatedBudgetFlowStep, string> = {
   connect_wallet: 'Connect wallet',
   confirm_network: 'Confirm Base network',
   derive_smart_account: 'Derive smart account',
   deploy_smart_account: 'Deploy smart account',
+  fund_smart_account_usdc: 'Top up smart account USDC',
+  fund_smart_account_gas: 'Top up smart account gas',
+  approve_settlement_contract: 'Approve settlement contract',
+  create_onchain_budget: 'Create onchain budget',
   sign_budget_delegation: 'Sign budget delegation',
   reset_stale_budget: 'Reset stale budget',
 }
@@ -118,7 +164,11 @@ const createFlowSteps: DelegatedBudgetFlowStep[] = [
   'connect_wallet',
   'derive_smart_account',
   'deploy_smart_account',
+  'fund_smart_account_usdc',
+  'fund_smart_account_gas',
   'sign_budget_delegation',
+  'approve_settlement_contract',
+  'create_onchain_budget',
 ]
 
 const resetFlowSteps: DelegatedBudgetFlowStep[] = [
@@ -145,6 +195,7 @@ export function DelegatedBudgetManager({
   const [interval, setInterval] = useState<DelegatedBudgetInterval>('month')
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+  const [outcome, setOutcome] = useState<DelegatedBudgetOutcome | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentStep, setCurrentStep] = useState<DelegatedBudgetFlowStep | null>(
     null,
@@ -208,16 +259,23 @@ export function DelegatedBudgetManager({
     setIsSubmitting(true)
     setError(null)
     setSuccess(null)
+    setOutcome(null)
     setCurrentFlow('create')
     setCurrentStep('confirm_network')
 
+    let setup:
+      | Awaited<ReturnType<typeof createDelegatedBudgetWithWallet>>
+      | null = null
+
     try {
-      const setup = await createDelegatedBudgetWithWallet({
+      setup = await createDelegatedBudgetWithWallet({
         amountUsdCents: Math.round(parsedAmount * 100),
         budgetType,
         interval: budgetType === 'periodic' ? interval : null,
         chainId: environment.chainId,
         backendDelegateAddress: environment.delegatedBudget.backendDelegateAddress,
+        bundlerUrl: environment.delegatedBudget.bundlerUrl,
+        settlementContract: environment.delegatedBudget.settlementContract,
         tokenAddress: environment.delegatedBudget.tokenAddress,
         treasuryAddress: environment.delegatedBudget.treasuryAddress,
         onProgress: setCurrentStep,
@@ -227,14 +285,50 @@ export function DelegatedBudgetManager({
         data: setup,
       })
       await onUpdated()
+      setOutcome({
+        variant: 'default',
+        title: 'Delegated budget saved',
+        message:
+          'The onchain budget was created and BuddyPie saved it successfully.',
+        detail:
+          'If the rail still looks disabled for a moment, use Refresh or reload the profile once the cache catches up.',
+        approvalTxHash: setup.approvalTxHash,
+        createTxHash: setup.createTxHash,
+      })
       onSelectRail?.()
       setSuccess('Delegated budget created and ready to use.')
     } catch (createError) {
-      setError(
+      const message =
         createError instanceof Error
           ? createError.message
-          : 'Could not create the delegated budget.',
-      )
+          : 'Could not create the delegated budget.'
+
+      if (setup?.createTxHash) {
+        setOutcome({
+          variant: 'destructive',
+          title: 'Onchain budget created, but BuddyPie did not confirm it',
+          message:
+            'The wallet transaction completed, but BuddyPie does not currently see an active delegated budget for this profile.',
+          detail: message,
+          approvalTxHash: setup.approvalTxHash,
+          createTxHash: setup.createTxHash,
+        })
+        setError(
+          'BuddyPie did not finish confirming the delegated budget after the onchain transaction succeeded.',
+        )
+      } else if (setup?.approvalTxHash) {
+        setOutcome({
+          variant: 'destructive',
+          title: 'Approval succeeded, but budget creation did not finish',
+          message:
+            'The settlement approval completed, but the delegated-budget creation step did not succeed.',
+          detail: message,
+          approvalTxHash: setup.approvalTxHash,
+        })
+        setError(message)
+      } else {
+        setError(message)
+      }
     } finally {
       setCurrentFlow(null)
       setCurrentStep(null)
@@ -250,6 +344,7 @@ export function DelegatedBudgetManager({
     setIsSubmitting(true)
     setError(null)
     setSuccess(null)
+    setOutcome(null)
 
     try {
       await refreshDelegatedBudgetState({
@@ -290,6 +385,7 @@ export function DelegatedBudgetManager({
     setIsSubmitting(true)
     setError(null)
     setSuccess(null)
+    setOutcome(null)
     setCurrentFlow('reset')
     setCurrentStep('confirm_network')
 
@@ -297,6 +393,8 @@ export function DelegatedBudgetManager({
       const revokeResult = await revokeDelegatedBudgetWithWallet({
         chainId: environment.chainId,
         bundlerUrl: environment.delegatedBudget.bundlerUrl,
+        settlementContract: environment.delegatedBudget.settlementContract,
+        contractBudgetId: record.contractBudgetId,
         delegationJson: record.delegationJson,
         onProgress: setCurrentStep,
       })
@@ -347,6 +445,7 @@ export function DelegatedBudgetManager({
     setIsSubmitting(true)
     setError(null)
     setSuccess(null)
+    setOutcome(null)
     setCurrentFlow('revoke')
     setCurrentStep('confirm_network')
 
@@ -354,6 +453,8 @@ export function DelegatedBudgetManager({
       const revokeResult = await revokeDelegatedBudgetWithWallet({
         chainId: environment.chainId,
         bundlerUrl: environment.delegatedBudget.bundlerUrl,
+        settlementContract: environment.delegatedBudget.settlementContract,
+        contractBudgetId: record.contractBudgetId,
         delegationJson: record.delegationJson,
         onProgress: setCurrentStep,
       })
@@ -368,6 +469,17 @@ export function DelegatedBudgetManager({
         },
       })
       await onUpdated()
+      setOutcome({
+        variant: 'default',
+        title: 'Delegated budget revoked',
+        message:
+          revokeResult.revocationMode === 'onchain'
+            ? 'The delegated budget was revoked onchain and BuddyPie recorded the change.'
+            : revokeResult.warning,
+        ...(revokeResult.revocationMode === 'onchain'
+          ? { revokeTxHash: revokeResult.txHash }
+          : {}),
+      })
       setSuccess(
         revokeResult.revocationMode === 'onchain'
           ? 'Delegated budget revoked.'
@@ -444,6 +556,66 @@ export function DelegatedBudgetManager({
       {success ? (
         <Alert className="mt-3 border-2 border-foreground">
           <AlertDescription>{success}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {outcome ? (
+        <Alert
+          variant={outcome.variant}
+          className="mt-3 border-2 border-foreground"
+        >
+          <AlertTitle>{outcome.title}</AlertTitle>
+          <AlertDescription>
+            <p>{outcome.message}</p>
+            {outcome.detail ? <p>{outcome.detail}</p> : null}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {outcome.approvalTxHash ? (
+                <a
+                  href={
+                    getTransactionExplorerHref(
+                      environment.chainId,
+                      outcome.approvalTxHash,
+                    ) ?? '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center border-2 border-foreground px-2 py-1 text-[10px] font-black uppercase tracking-wide"
+                >
+                  Approval tx {formatHash(outcome.approvalTxHash)}
+                </a>
+              ) : null}
+              {outcome.createTxHash ? (
+                <a
+                  href={
+                    getTransactionExplorerHref(
+                      environment.chainId,
+                      outcome.createTxHash,
+                    ) ?? '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center border-2 border-foreground px-2 py-1 text-[10px] font-black uppercase tracking-wide"
+                >
+                  Create tx {formatHash(outcome.createTxHash)}
+                </a>
+              ) : null}
+              {outcome.revokeTxHash ? (
+                <a
+                  href={
+                    getTransactionExplorerHref(
+                      environment.chainId,
+                      outcome.revokeTxHash,
+                    ) ?? '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center border-2 border-foreground px-2 py-1 text-[10px] font-black uppercase tracking-wide"
+                >
+                  Revoke tx {formatHash(outcome.revokeTxHash)}
+                </a>
+              ) : null}
+            </div>
+          </AlertDescription>
         </Alert>
       ) : null}
 
@@ -541,6 +713,48 @@ export function DelegatedBudgetManager({
                   Last settlement
                 </p>
                 <p className="mt-1 font-bold">{formatDateTime(summary.lastSettlementAt)}</p>
+              </div>
+            ) : null}
+            {record?.createTxHash ? (
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Create tx
+                </p>
+                <a
+                  href={
+                    getTransactionExplorerHref(
+                      environment.chainId,
+                      record.createTxHash,
+                    ) ?? '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 block truncate font-bold underline underline-offset-2"
+                  title={record.createTxHash}
+                >
+                  {formatHash(record.createTxHash)}
+                </a>
+              </div>
+            ) : null}
+            {record?.approvalTxHash ? (
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Approval tx
+                </p>
+                <a
+                  href={
+                    getTransactionExplorerHref(
+                      environment.chainId,
+                      record.approvalTxHash,
+                    ) ?? '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 block truncate font-bold underline underline-offset-2"
+                  title={record.approvalTxHash}
+                >
+                  {formatHash(record.approvalTxHash)}
+                </a>
               </div>
             ) : null}
           </div>
@@ -664,12 +878,12 @@ export function DelegatedBudgetManager({
               </div>
 
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Setup stores a smart-account delegation with a treasury-bound USDC
-                spend limit so later agent spends can settle without repeated wallet
-                prompts. If your MetaMask smart account is still counterfactual on
-                this network, BuddyPie will ask for a one-time deployment
-                transaction first. The smart account itself must also hold enough
-                USDC on this network before the budget can be created or charged.
+                Setup signs the delegated permission, funds the smart account if
+                needed, approves the settlement contract, and creates the budget
+                onchain from your MetaMask smart account so later agent spends can
+                settle without repeated wallet prompts. If your MetaMask smart
+                account is still counterfactual on this network, BuddyPie will ask
+                for a one-time deployment transaction first.
               </p>
 
               <Button

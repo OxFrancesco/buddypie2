@@ -2,6 +2,7 @@ import defaultMdxComponents from 'fumadocs-ui/mdx';
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
 import { File, Files, Folder } from 'fumadocs-ui/components/files';
 import type { MDXComponents } from 'mdx/types';
+import { Mermaid } from '@/components/mermaid';
 
 export function getMDXComponents(components?: MDXComponents) {
   return {
@@ -11,6 +12,7 @@ export function getMDXComponents(components?: MDXComponents) {
     File,
     Files,
     Folder,
+    Mermaid,
     ...components,
   } satisfies MDXComponents;
 }

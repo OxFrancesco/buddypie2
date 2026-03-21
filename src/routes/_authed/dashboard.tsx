@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { convexQuery } from '@convex-dev/react-query'
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import {
   useQuery,
   useQueryClient,
@@ -19,6 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import { Input } from '~/components/ui/input'
 import { Textarea } from '~/components/ui/textarea'
 import type { GithubRepoOption } from '~/features/sandboxes/server'
+import { readCurrentDelegatedBudgetHealth } from '~/features/billing/server'
 import {
   checkGithubConnection,
   createSandbox,
@@ -29,6 +30,7 @@ import {
 } from '~/features/sandboxes/server'
 import { formatUsdCents } from '~/lib/billing/format'
 import { formatSandboxPaymentMethod } from '~/lib/billing/presentation'
+import { readConnectedWalletUsdcBalance } from '~/lib/billing/wallet-balance-client'
 import { postJsonWithX402Payment } from '~/lib/billing/x402-client'
 import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
 import {
@@ -48,6 +50,10 @@ type X402SandboxActionResult = {
   agentPresetId: string
 }
 
+type DelegatedBudgetSummary = {
+  status?: string | null
+}
+
 export const Route = createFileRoute('/_authed/dashboard')({
   loader: async ({ context }) => {
     await Promise.all([
@@ -58,6 +64,9 @@ export const Route = createFileRoute('/_authed/dashboard')({
       ),
       context.queryClient.ensureQueryData(
         convexQuery(api.billing.pricingCatalog, {}),
+      ),
+      context.queryClient.ensureQueryData(
+        convexQuery(api.billing.currentDelegatedBudget, {}),
       ),
     ])
 
@@ -84,6 +93,41 @@ function DashboardRoute() {
   const { data: pricingCatalog } = useSuspenseQuery(
     convexQuery(api.billing.pricingCatalog, {}),
   )
+  const { data: delegatedBudgetRecord } = useSuspenseQuery(
+    convexQuery(api.billing.currentDelegatedBudget, {}),
+  )
+  const billingSummaryView = billingSummary as typeof billingSummary & {
+    delegatedBudget?: DelegatedBudgetSummary
+  }
+  const delegatedBudget = billingSummaryView.delegatedBudget
+  const delegatedBudgetHealthQuery = useQuery({
+    queryKey: [
+      'billing',
+      'delegated-budget-health',
+      delegatedBudgetRecord?._id ?? 'none',
+    ],
+    queryFn: () => readCurrentDelegatedBudgetHealth(),
+    staleTime: 15_000,
+  })
+  const delegatedBudgetHealth = delegatedBudgetHealthQuery.data
+  const connectedWalletUsdcBalanceQuery = useQuery({
+    queryKey: [
+      'billing',
+      'connected-wallet-usdc-balance',
+      pricingCatalog.environment.chainId,
+      pricingCatalog.environment.delegatedBudget.tokenAddress,
+    ],
+    queryFn: () =>
+      readConnectedWalletUsdcBalance({
+        chainId: pricingCatalog.environment.chainId,
+        tokenAddress: pricingCatalog.environment.delegatedBudget.tokenAddress,
+      }),
+    staleTime: 15_000,
+  })
+  const connectedWalletUsdcBalance = connectedWalletUsdcBalanceQuery.data
+  const hasActiveDelegatedBudget =
+    delegatedBudget?.status === 'active' &&
+    delegatedBudgetHealth?.health === 'usable'
   const [agentPresetId, setAgentPresetId] =
     useState<OpenCodeAgentPresetId>('general-engineer')
   const [paymentMethod, setPaymentMethod] =
@@ -149,6 +193,12 @@ function DashboardRoute() {
       }),
       queryClient.invalidateQueries({
         queryKey: convexQuery(api.billing.pricingCatalog, {}).queryKey,
+      }),
+      queryClient.invalidateQueries({
+        queryKey: convexQuery(api.billing.currentDelegatedBudget, {}).queryKey,
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ['billing', 'delegated-budget-health'],
       }),
     ])
   }
@@ -248,6 +298,15 @@ function DashboardRoute() {
     event.preventDefault()
     setFormError(null)
     setActionError(null)
+
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      setFormError(
+        delegatedBudgetHealth?.message ??
+          'Set up an active delegated budget before using that payment rail.',
+      )
+      return
+    }
+
     setIsCreating(true)
 
     try {
@@ -403,6 +462,32 @@ function DashboardRoute() {
                     setFormError(null)
                     setPaymentMethod(nextValue)
                   }}
+                  creditsDescription="Spend from your shared BuddyPie wallet."
+                  x402Description={`Pay per action from your wallet on ${billingSummary.wallet.fundingNetwork}.`}
+                  delegatedBudgetDescription={
+                    hasActiveDelegatedBudget
+                      ? 'Spend from your active MetaMask delegated budget.'
+                      : delegatedBudgetHealth?.message ??
+                        'Set up a MetaMask delegated budget in your wallet before selecting this rail.'
+                  }
+                  delegatedBudgetDisabled={!hasActiveDelegatedBudget}
+                  creditsBalanceFormatted={formatUsdCents(
+                    billingSummary.wallet.availableUsdCents,
+                  )}
+                  x402BalanceFormatted={
+                    connectedWalletUsdcBalance?.balanceUsdCents != null
+                      ? formatUsdCents(
+                          connectedWalletUsdcBalance.balanceUsdCents,
+                        )
+                      : undefined
+                  }
+                  delegatedBudgetRemainingFormatted={
+                    delegatedBudget
+                      ? formatUsdCents(
+                          delegatedBudget.remainingAmountUsdCents ?? 0,
+                        )
+                      : undefined
+                  }
                 />
               </div>
 
@@ -559,7 +644,19 @@ function DashboardRoute() {
                   variant="destructive"
                   className="border-2 border-foreground"
                 >
-                  <AlertDescription>{formError}</AlertDescription>
+                  <AlertDescription className="space-y-3">
+                    <p>{formError}</p>
+                    {paymentMethod === 'delegated_budget' &&
+                    !hasActiveDelegatedBudget ? (
+                      <Link
+                        to="/profile"
+                        hash="delegated-budget"
+                        className="inline-flex h-8 items-center justify-center border-2 border-background bg-background px-4 text-xs font-black uppercase tracking-wider text-foreground shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                      >
+                        Go to wallet
+                      </Link>
+                    ) : null}
+                  </AlertDescription>
                 </Alert>
               ) : null}
 

@@ -98,6 +98,7 @@ type CreateDelegatedBudgetInput = {
   delegatorSmartAccount: string
   delegateAddress: string
   treasuryAddress: string
+  settlementContract: string
   delegationJson: string
   delegationHash: string
   delegationExpiresAt?: number | null
@@ -124,12 +125,22 @@ export type DelegatedBudgetHealthResult = {
     | 'invalid_delegation'
     | 'unknown'
   message: string
+  /** Smart account USDC balance on the billing chain, when the on-chain read succeeds. */
+  smartAccountUsdcUsdCents: number | null
 }
 
 type RevokeDelegatedBudgetInput = {
   delegatedBudgetId: string
   revokeTxHash?: string
   revocationMode: 'onchain' | 'local_retire'
+}
+
+export type DelegatedSmartAccountBalanceResult = {
+  delegatedBudgetId: string
+  smartAccountAddress: string
+  tokenSymbol: 'USDC'
+  network: 'base-sepolia' | 'base-mainnet'
+  balanceUsdCents: number | null
 }
 
 export const createDelegatedBudget = createServerFn({ method: 'POST' })
@@ -150,6 +161,7 @@ export const createDelegatedBudget = createServerFn({ method: 'POST' })
       delegatorSmartAccount: data.delegatorSmartAccount,
       delegateAddress: data.delegateAddress,
       treasuryAddress: data.treasuryAddress,
+      settlementContract: data.settlementContract,
       delegationJson: data.delegationJson,
       delegationHash: data.delegationHash,
       ...(data.delegationExpiresAt
@@ -204,7 +216,34 @@ export const readCurrentDelegatedBudgetHealth = createServerFn({
   method: 'GET',
 }).handler(async (): Promise<DelegatedBudgetHealthResult | null> => {
   const { convex } = await getAuthenticatedConvexClient()
-  const { readDelegatedBudgetHealth } = await import(
+  const {
+    readDelegatedBudgetHealth,
+    readDelegatorSmartAccountUsdcUsdCents,
+  } = await import('~/lib/server/delegated-budget')
+  const budget = await convex.query(api.billing.currentDelegatedBudget, {})
+
+  if (!budget) {
+    return null
+  }
+
+  const health = await readDelegatedBudgetHealth(budget)
+  const smartAccountUsdcUsdCents =
+    await readDelegatorSmartAccountUsdcUsdCents(budget.delegatorSmartAccount)
+
+  return {
+    delegatedBudgetId: String(budget._id),
+    health: health.health,
+    healthReason: health.healthReason,
+    message: health.message,
+    smartAccountUsdcUsdCents,
+  }
+})
+
+export const readCurrentDelegatedSmartAccountBalance = createServerFn({
+  method: 'GET',
+}).handler(async (): Promise<DelegatedSmartAccountBalanceResult | null> => {
+  const { convex } = await getAuthenticatedConvexClient()
+  const { readDelegatorSmartAccountUsdcUsdCents } = await import(
     '~/lib/server/delegated-budget'
   )
   const budget = await convex.query(api.billing.currentDelegatedBudget, {})
@@ -213,13 +252,14 @@ export const readCurrentDelegatedBudgetHealth = createServerFn({
     return null
   }
 
-  const health = await readDelegatedBudgetHealth(budget)
-
   return {
     delegatedBudgetId: String(budget._id),
-    health: health.health,
-    healthReason: health.healthReason,
-    message: health.message,
+    smartAccountAddress: budget.delegatorSmartAccount,
+    tokenSymbol: 'USDC',
+    network: budget.network,
+    balanceUsdCents: await readDelegatorSmartAccountUsdcUsdCents(
+      budget.delegatorSmartAccount,
+    ),
   }
 })
 

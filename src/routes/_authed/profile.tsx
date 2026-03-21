@@ -11,6 +11,7 @@ import { Button } from '~/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card'
 import {
   readCurrentDelegatedBudgetHealth,
+  readCurrentDelegatedSmartAccountBalance,
   syncCurrentClerkBillingState,
 } from '~/features/billing/server'
 import { formatUsdCents } from '~/lib/billing/format'
@@ -18,6 +19,7 @@ import {
   formatBillingPlanPeriod,
   formatBillingPlanStatus,
 } from '~/lib/billing/presentation'
+import { readConnectedWalletUsdcBalance } from '~/lib/billing/wallet-balance-client'
 import type { SandboxPaymentMethod } from '~/lib/sandboxes'
 
 type DelegatedBudgetSummary = {
@@ -88,6 +90,31 @@ function ProfileRoute() {
     staleTime: 15_000,
   })
   const delegatedBudgetHealth = delegatedBudgetHealthQuery.data
+  const delegatedSmartAccountBalanceQuery = useQuery({
+    queryKey: [
+      'billing',
+      'delegated-smart-account-balance',
+      delegatedBudgetRecord?._id ?? 'none',
+    ],
+    queryFn: () => readCurrentDelegatedSmartAccountBalance(),
+    staleTime: 15_000,
+  })
+  const delegatedSmartAccountBalance = delegatedSmartAccountBalanceQuery.data
+  const connectedWalletUsdcBalanceQuery = useQuery({
+    queryKey: [
+      'billing',
+      'connected-wallet-usdc-balance',
+      pricingCatalog.environment.chainId,
+      pricingCatalog.environment.delegatedBudget.tokenAddress,
+    ],
+    queryFn: () =>
+      readConnectedWalletUsdcBalance({
+        chainId: pricingCatalog.environment.chainId,
+        tokenAddress: pricingCatalog.environment.delegatedBudget.tokenAddress,
+      }),
+    staleTime: 15_000,
+  })
+  const connectedWalletUsdcBalance = connectedWalletUsdcBalanceQuery.data
   const hasActiveDelegatedBudget =
     delegatedBudget?.status === 'active' &&
     delegatedBudgetHealth?.health === 'usable'
@@ -103,20 +130,20 @@ function ProfileRoute() {
   }, [])
 
   async function refreshProfile() {
-    await Promise.all([
-      queryClient.invalidateQueries({
-        queryKey: convexQuery(api.billing.dashboardSummary, {}).queryKey,
+    const queryKeys = [
+      convexQuery(api.billing.dashboardSummary, {}).queryKey,
+      convexQuery(api.billing.pricingCatalog, {}).queryKey,
+      convexQuery(api.billing.currentDelegatedBudget, {}).queryKey,
+      ['billing', 'delegated-budget-health'],
+      ['billing', 'delegated-smart-account-balance'],
+    ] as const
+
+    await Promise.all(
+      queryKeys.map(async (queryKey) => {
+        await queryClient.invalidateQueries({ queryKey })
+        await queryClient.refetchQueries({ queryKey, type: 'active' })
       }),
-      queryClient.invalidateQueries({
-        queryKey: convexQuery(api.billing.pricingCatalog, {}).queryKey,
-      }),
-      queryClient.invalidateQueries({
-        queryKey: convexQuery(api.billing.currentDelegatedBudget, {}).queryKey,
-      }),
-      queryClient.invalidateQueries({
-        queryKey: ['billing', 'delegated-budget-health'],
-      }),
-    ])
+    )
   }
 
   async function syncBillingState(showFeedback: boolean) {
@@ -197,7 +224,7 @@ function ProfileRoute() {
               </p>
             ) : null}
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
               <div className="border-2 border-foreground bg-muted p-3">
                 <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
                   Wallet available
@@ -225,6 +252,24 @@ function ProfileRoute() {
                   {formatBillingPlanPeriod(
                     currentPlan?.period ?? undefined,
                   ) ?? 'No billing period'}
+                </p>
+              </div>
+              <div className="border-2 border-foreground bg-muted p-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                  Delegated USDC
+                </p>
+                <p className="mt-1 text-lg font-black">
+                  {delegatedSmartAccountBalance?.balanceUsdCents === null ||
+                  delegatedSmartAccountBalance?.balanceUsdCents === undefined
+                    ? 'Not available'
+                    : formatUsdCents(
+                        delegatedSmartAccountBalance.balanceUsdCents,
+                      )}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {delegatedSmartAccountBalance?.smartAccountAddress
+                    ? `${delegatedSmartAccountBalance.smartAccountAddress.slice(0, 6)}…${delegatedSmartAccountBalance.smartAccountAddress.slice(-4)}`
+                    : 'Create a delegated budget to track it here.'}
                 </p>
               </div>
             </div>
@@ -263,6 +308,24 @@ function ProfileRoute() {
                       'Create a MetaMask delegated budget before using this rail.'
                 }
                 delegatedBudgetDisabled={!hasActiveDelegatedBudget}
+                hideDelegatedWalletCta
+                creditsBalanceFormatted={formatUsdCents(
+                  billingSummary.wallet.availableUsdCents,
+                )}
+                x402BalanceFormatted={
+                  connectedWalletUsdcBalance?.balanceUsdCents != null
+                    ? formatUsdCents(
+                        connectedWalletUsdcBalance.balanceUsdCents,
+                      )
+                    : undefined
+                }
+                delegatedBudgetRemainingFormatted={
+                  delegatedBudget
+                    ? formatUsdCents(
+                        delegatedBudget.remainingAmountUsdCents ?? 0,
+                      )
+                    : undefined
+                }
               />
             </div>
 

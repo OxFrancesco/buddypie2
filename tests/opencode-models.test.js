@@ -82,14 +82,15 @@ describe('preset model defaults', () => {
     }
   })
 
-  test('adds explicit npm docs verification steps to the docs preset', () => {
+  test('adds explicit bun docs verification steps to the docs preset', () => {
     const preset = getOpenCodeAgentPreset('docs-writer')
 
-    expect(preset.instructionsMd).toContain('use `npm`, not Bun')
-    expect(preset.instructionsMd).toContain('`npm run types:check`')
-    expect(preset.instructionsMd).toContain('`npm run build`')
-    expect(preset.instructionsMd).toContain('`npm run dev` or `npm run preview`')
-    expect(preset.starterPrompt).toContain('Validate the result with npm inside the docs app')
-    expect(preset.workspaceBootstrap?.packageManager).toBe('npm')
+    expect(preset.instructionsMd).toContain('use `bun` for install, dev, typecheck, preview, and build commands')
+    expect(preset.instructionsMd).toContain('`bun run types:check`')
+    expect(preset.instructionsMd).toContain('`bun run build`')
+    expect(preset.instructionsMd).toContain('`bun run dev` or `bun run preview`')
+    expect(preset.instructionsMd).toContain('When `sources/fumadocs` is absent')
+    expect(preset.starterPrompt).toContain('Validate the result with Bun inside the docs app')
+    expect(preset.workspaceBootstrap?.packageManager).toBe('bun')
   })
 })

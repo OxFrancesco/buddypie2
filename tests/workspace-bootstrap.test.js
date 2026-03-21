@@ -14,7 +14,7 @@ const docsBootstrap = {
   docsTemplate: 'tanstack-start',
   preferredDocsPath: 'docs',
   fallbackDocsPath: 'docs-site',
-  packageManager: 'npm',
+  packageManager: 'bun',
 }
 
 describe('ensureDirectoryInGitignore', () => {
@@ -111,7 +111,7 @@ describe('workspace bootstrap context text', () => {
       sourceRepoBranch: 'main',
       sourceRepoPath: '/home/daytona/example-repo/sources/fumadocs',
       docsAppPath: '/home/daytona/example-repo/docs-site',
-      packageManager: 'npm',
+      packageManager: 'bun',
     }
 
     const instructions = buildWorkspaceBootstrapInstructions(context)
@@ -120,12 +120,12 @@ describe('workspace bootstrap context text', () => {
     expect(instructions).toContain('/home/daytona/example-repo/sources/fumadocs')
     expect(instructions).toContain('branch `main`')
     expect(instructions).toContain('/home/daytona/example-repo/docs-site')
-    expect(instructions).toContain('`npm`')
+    expect(instructions).toContain('`bun`')
 
     expect(promptPrefix).toContain('/home/daytona/example-repo')
     expect(promptPrefix).toContain('/home/daytona/example-repo/sources/fumadocs')
     expect(promptPrefix).toContain('/home/daytona/example-repo/docs-site')
     expect(promptPrefix).toContain('framework truth')
-    expect(promptPrefix).toContain('use npm inside the docs app')
+    expect(promptPrefix).toContain('use bun inside the docs app')
   })
 })

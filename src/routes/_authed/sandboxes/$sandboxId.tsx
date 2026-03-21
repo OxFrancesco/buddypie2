@@ -22,7 +22,9 @@ import {
   getPortPreview,
   restartSandbox,
 } from '~/features/sandboxes/server'
+import { formatUsdCents } from '~/lib/billing/format'
 import { formatSandboxPaymentMethod } from '~/lib/billing/presentation'
+import { readConnectedWalletUsdcBalance } from '~/lib/billing/wallet-balance-client'
 import { postJsonWithX402Payment } from '~/lib/billing/x402-client'
 import {
   getOpenCodeModelOptionByProviderAndModel,
@@ -223,6 +225,21 @@ function SandboxDetailRoute() {
     staleTime: 15_000,
   })
   const delegatedBudgetHealth = delegatedBudgetHealthQuery.data
+  const connectedWalletUsdcBalanceQuery = useQuery({
+    queryKey: [
+      'billing',
+      'connected-wallet-usdc-balance',
+      pricingCatalog.environment.chainId,
+      pricingCatalog.environment.delegatedBudget.tokenAddress,
+    ],
+    queryFn: () =>
+      readConnectedWalletUsdcBalance({
+        chainId: pricingCatalog.environment.chainId,
+        tokenAddress: pricingCatalog.environment.delegatedBudget.tokenAddress,
+      }),
+    staleTime: 15_000,
+  })
+  const connectedWalletUsdcBalance = connectedWalletUsdcBalanceQuery.data
   const hasActiveDelegatedBudget =
     delegatedBudget?.status === 'active' &&
     delegatedBudgetHealth?.health === 'usable'
@@ -315,6 +332,15 @@ function SandboxDetailRoute() {
 
   async function triggerPreviewBoot() {
     if (!sandbox || !isValidPreviewPort(previewPort)) {
+      return
+    }
+
+    if (paymentMethod === 'delegated_budget' && !hasActiveDelegatedBudget) {
+      previewBootAttemptKeyRef.current = null
+      setPreviewBootError(
+        delegatedBudgetHealth?.message ??
+          'Set up an active delegated budget before using that payment rail.',
+      )
       return
     }
 
@@ -928,7 +954,19 @@ function SandboxDetailRoute() {
               variant="destructive"
               className="mb-4 border-2 border-foreground"
             >
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription className="space-y-3">
+                <p>{error}</p>
+                {paymentMethod === 'delegated_budget' &&
+                !hasActiveDelegatedBudget ? (
+                  <Link
+                    to="/profile"
+                    hash="delegated-budget"
+                    className="inline-flex h-8 items-center justify-center border-2 border-background bg-background px-4 text-xs font-black uppercase tracking-wider text-foreground shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                  >
+                    Go to wallet
+                  </Link>
+                ) : null}
+              </AlertDescription>
             </Alert>
           ) : null}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -978,6 +1016,23 @@ function SandboxDetailRoute() {
                     'Set up a MetaMask delegated budget before selecting this rail.'
               }
               delegatedBudgetDisabled={!hasActiveDelegatedBudget}
+              creditsBalanceFormatted={formatUsdCents(
+                billingSummary.wallet.availableUsdCents,
+              )}
+              x402BalanceFormatted={
+                connectedWalletUsdcBalance?.balanceUsdCents != null
+                  ? formatUsdCents(
+                      connectedWalletUsdcBalance.balanceUsdCents,
+                    )
+                  : undefined
+              }
+              delegatedBudgetRemainingFormatted={
+                delegatedBudget
+                  ? formatUsdCents(
+                      delegatedBudget.remainingAmountUsdCents ?? 0,
+                    )
+                  : undefined
+              }
             />
 
             <DelegatedBudgetManager
@@ -1187,9 +1242,19 @@ function SandboxDetailRoute() {
                   </p>
                 ) : null}
                 {previewBootError ? (
-                  <p className="mt-2 text-xs text-destructive">
-                    {previewBootError}
-                  </p>
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-destructive">{previewBootError}</p>
+                    {paymentMethod === 'delegated_budget' &&
+                    !hasActiveDelegatedBudget ? (
+                      <Link
+                        to="/profile"
+                        hash="delegated-budget"
+                        className="inline-flex h-8 items-center justify-center border-2 border-foreground bg-foreground px-3 text-[10px] font-black uppercase tracking-wider text-background shadow-[2px_2px_0_var(--accent)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+                      >
+                        Go to wallet
+                      </Link>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
 

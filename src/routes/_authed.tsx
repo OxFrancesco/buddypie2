@@ -1,10 +1,15 @@
+import { convexQuery } from '@convex-dev/react-query'
 import { SignIn, UserButton } from '@clerk/tanstack-react-start'
+import { useQuery } from '@tanstack/react-query'
+import { api } from 'convex/_generated/api'
 import {
   Link,
   Outlet,
   createFileRoute,
   useLocation,
 } from '@tanstack/react-router'
+import { formatUsdCents } from '~/lib/billing/format'
+import { readConnectedWalletUsdcBalance } from '~/lib/billing/wallet-balance-client'
 
 export const Route = createFileRoute('/_authed')({
   beforeLoad: ({ context }) => {
@@ -40,6 +45,28 @@ export const Route = createFileRoute('/_authed')({
 })
 
 function AuthedLayout() {
+  const pricingCatalogQuery = useQuery(convexQuery(api.billing.pricingCatalog, {}))
+  const walletUsdcBalanceQuery = useQuery({
+    queryKey: [
+      'billing',
+      'connected-wallet-usdc-balance',
+      pricingCatalogQuery.data?.environment.chainId ?? 'unknown',
+      pricingCatalogQuery.data?.environment.delegatedBudget.tokenAddress ??
+        'unknown',
+    ],
+    queryFn: async () =>
+      await readConnectedWalletUsdcBalance({
+        chainId: pricingCatalogQuery.data!.environment.chainId,
+        tokenAddress:
+          pricingCatalogQuery.data!.environment.delegatedBudget.tokenAddress,
+      }),
+    enabled:
+      Boolean(pricingCatalogQuery.data?.environment.chainId) &&
+      Boolean(pricingCatalogQuery.data?.environment.delegatedBudget.tokenAddress),
+    staleTime: 15_000,
+  })
+  const walletUsdcBalance = walletUsdcBalanceQuery.data
+
   return (
     <div className="min-h-screen">
       <header className="border-b-2 border-foreground bg-card px-6 py-4">
@@ -57,7 +84,7 @@ function AuthedLayout() {
           </Link>
           <Link
             to="/profile"
-            className="group flex shrink-0 items-center gap-2 rounded-full border-2 border-foreground bg-background py-1 pl-1 pr-3 shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+            className="wallet-pill group flex shrink-0 items-center gap-3 rounded-full border-2 border-foreground bg-background py-1.5 pl-1.5 pr-4 shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
           >
             <UserButton
               appearance={{
@@ -90,9 +117,22 @@ function AuthedLayout() {
                 },
               }}
             />
-            <span className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors group-hover:text-foreground">
-              Wallet
-            </span>
+            <div className="flex flex-col items-end leading-tight">
+              <span className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors group-hover:text-foreground">
+                Wallet
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">
+                  USDC
+                </span>
+                <span className="wallet-balance inline-block origin-left text-[11px] font-black tabular-nums text-foreground">
+                  {walletUsdcBalance?.balanceUsdCents === null ||
+                  walletUsdcBalance?.balanceUsdCents === undefined
+                    ? '--'
+                    : formatUsdCents(walletUsdcBalance.balanceUsdCents)}
+                </span>
+              </div>
+            </div>
           </Link>
         </div>
       </header>

@@ -152,7 +152,7 @@ BuddyPie writes these files to each sandbox:
 
 The `docs-writer` preset includes special workspace bootstrap:
 
-1. Clone Fumadocs reference repo to `sources/fumadocs`
+1. In BuddyPie-prepared docs sandboxes, clone Fumadocs reference repo to `sources/fumadocs`
 2. Add `sources/` to `.gitignore`
 3. Check for existing `docs/` directory
 4. Scaffold Fumadocs app if needed
@@ -168,7 +168,7 @@ workspaceBootstrap: {
   docsTemplate: 'tanstack-start',
   preferredDocsPath: 'docs',
   fallbackDocsPath: 'docs-site',
-  packageManager: 'npm',
+  packageManager: 'bun',
 }
 ```
 

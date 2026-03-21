@@ -590,6 +590,7 @@ export const createDelegatedBudget = mutation({
     delegatorSmartAccount: v.string(),
     delegateAddress: v.string(),
     treasuryAddress: v.string(),
+    settlementContract: v.string(),
     delegationJson: v.string(),
     delegationHash: v.string(),
     delegationExpiresAt: v.optional(v.number()),

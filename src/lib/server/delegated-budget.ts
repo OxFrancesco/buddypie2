@@ -1,7 +1,6 @@
 import {
   ExecutionMode,
   contracts,
-  createCaveatEnforcerClient,
   createExecution,
   getDeleGatorEnvironment,
   redeemDelegations,
@@ -22,9 +21,10 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { base, baseSepolia } from 'viem/chains'
 import {
-  advanceDelegatedBudgetPeriodEndMs,
+  contractEnumToDelegatedBudgetInterval,
+  contractEnumToDelegatedBudgetType,
+  delegatedBudgetContractAbi,
   erc20BalanceAbi,
-  erc20TransferAbi,
   type DelegatedBudgetInterval,
   type DelegatedBudgetType,
   usdCentsToUsdcAtomic,
@@ -64,6 +64,7 @@ export type DelegatedBudgetRecordInput = {
   delegatorSmartAccount: string
   delegateAddress: string
   treasuryAddress?: string
+  settlementContract?: string
   contractBudgetId: string
   delegationJson: string
   delegationHash: string
@@ -198,6 +199,29 @@ function createLocalOnchainClients() {
   }
 }
 
+function resolveSettlementContractAddress(
+  budget?: Pick<DelegatedBudgetRecordInput, 'settlementContract'>,
+) {
+  const configuredAddress =
+    budget?.settlementContract?.trim() ||
+    getDelegatedBudgetEnvironmentConfig().settlementContract
+
+  if (!configuredAddress) {
+    throw new Error(
+      'The delegated budget settlement contract is not configured. Re-create the budget after configuring it.',
+    )
+  }
+
+  return getAddress(configuredAddress as Address)
+}
+
+function isBudgetNotFoundError(error: unknown) {
+  const message =
+    error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+
+  return /BudgetNotFound|budget not found|execution reverted/i.test(message)
+}
+
 function buildDelegatedBudgetHealthMessage(
   reason: DelegatedBudgetHealthReason,
 ) {
@@ -277,6 +301,20 @@ async function readDelegatorSmartAccountTokenBalanceAtomic(address: Address) {
   })
 }
 
+/** USDC balance of the MetaMask smart account (same funds used for x402), in USD cents. */
+export async function readDelegatorSmartAccountUsdcUsdCents(
+  delegatorSmartAccount: string,
+): Promise<number | null> {
+  try {
+    const atomic = await readDelegatorSmartAccountTokenBalanceAtomic(
+      getAddress(delegatorSmartAccount as Address),
+    )
+    return atomicToUsdCents(atomic)
+  } catch {
+    return null
+  }
+}
+
 function normalizeDelegationHash(args: {
   delegationJson: string
   delegationHash?: string
@@ -290,38 +328,6 @@ function normalizeDelegationHash(args: {
   }
 
   return computedHash
-}
-
-function normalizePeriodicWindow(args: {
-  budgetType: DelegatedBudgetType
-  interval?: DelegatedBudgetInterval
-  periodStartedAt?: number
-  periodEndsAt?: number
-}) {
-  if (args.budgetType !== 'periodic' || !args.interval) {
-    return {
-      periodStartedAt: null,
-      periodEndsAt: null,
-    }
-  }
-
-  let periodStartedAt = args.periodStartedAt ?? Date.now()
-  let periodEndsAt =
-    args.periodEndsAt ??
-    advanceDelegatedBudgetPeriodEndMs(periodStartedAt, args.interval)
-
-  while (Date.now() >= periodEndsAt) {
-    periodStartedAt = periodEndsAt
-    periodEndsAt = advanceDelegatedBudgetPeriodEndMs(
-      periodStartedAt,
-      args.interval,
-    )
-  }
-
-  return {
-    periodStartedAt,
-    periodEndsAt,
-  }
 }
 
 export function classifyDelegatedBudgetHealth(args: {
@@ -397,56 +403,6 @@ export function classifyDelegatedBudgetHealth(args: {
   return {
     health: 'usable',
     healthReason: 'unknown',
-  }
-}
-
-async function readRemainingDelegatedBudgetAllowance(args: {
-  budget: DelegatedBudgetRecordInput
-  delegation: Delegation
-  delegationHash: Hex
-}) {
-  const { environment, publicClient } = createOnchainReadContext()
-
-  if (args.budget.budgetType === 'periodic') {
-    const caveatClient = createCaveatEnforcerClient({
-      client: publicClient,
-      environment,
-    })
-    const allowance =
-      await caveatClient.getErc20PeriodTransferEnforcerAvailableAmount({
-        delegation: args.delegation,
-      })
-
-    return {
-      remainingAmountUsdCents: atomicToUsdCents(allowance.availableAmount),
-      ...normalizePeriodicWindow({
-        budgetType: args.budget.budgetType,
-        interval: args.budget.interval,
-        periodStartedAt: args.budget.periodStartedAt,
-        periodEndsAt: args.budget.periodEndsAt,
-      }),
-    }
-  }
-
-  const spentAmount =
-    await contracts.ERC20TransferAmountEnforcer.read.getSpentAmount({
-      client: publicClient,
-      contractAddress: environment.caveatEnforcers
-        .ERC20TransferAmountEnforcer as Address,
-      delegationManager: environment.DelegationManager as Address,
-      delegationHash: args.delegationHash,
-    })
-
-  const configuredAmountAtomic = usdCentsToUsdcAtomic(
-    args.budget.configuredAmountUsdCents,
-  )
-  const remainingAmountAtomic =
-    configuredAmountAtomic > spentAmount ? configuredAmountAtomic - spentAmount : 0n
-
-  return {
-    remainingAmountUsdCents: atomicToUsdCents(remainingAmountAtomic),
-    periodStartedAt: null,
-    periodEndsAt: null,
   }
 }
 
@@ -545,8 +501,9 @@ export async function readDelegatedBudgetHealth(
       budget: onchainBudget,
     }
   } catch (error) {
-    const message =
-      error instanceof Error && error.message.trim()
+    const message = isBudgetNotFoundError(error)
+      ? 'This delegated budget was never created onchain or has been removed. Reset and recreate it before using this payment rail.'
+      : error instanceof Error && error.message.trim()
         ? error.message
         : buildDelegatedBudgetHealthMessage('unknown')
 
@@ -569,34 +526,53 @@ export async function readDelegatedBudgetOnchain(
   await assertDeployedDelegatorSmartAccount(
     budget.delegatorSmartAccount as Address,
   )
+  const { publicClient } = createOnchainReadContext()
   const delegationHash = normalizeDelegationHash({
     delegationJson: budget.delegationJson,
     delegationHash: budget.delegationHash,
   })
   const disabled = await isDelegationDisabled(delegationHash)
-  const delegation = parseDelegation(budget.delegationJson)
-  const allowance = await readRemainingDelegatedBudgetAllowance({
-    budget,
-    delegation,
-    delegationHash,
+  const settlementContract = resolveSettlementContractAddress(budget)
+  const onchainBudget = await publicClient.readContract({
+    address: settlementContract,
+    abi: delegatedBudgetContractAbi,
+    functionName: 'getBudget',
+    args: [budget.contractBudgetId as Hex],
   })
   const expired =
     typeof budget.delegationExpiresAt === 'number' &&
     budget.delegationExpiresAt <= Date.now()
 
   return {
-    status: disabled || budget.status === 'revoked' ? 'revoked' : expired ? 'expired' : 'active',
-    budgetType: budget.budgetType,
-    interval: budget.interval ?? null,
-    configuredAmountUsdCents: budget.configuredAmountUsdCents,
-    remainingAmountUsdCents: allowance.remainingAmountUsdCents,
-    ownerAddress: getAddress(budget.ownerAddress as Address),
-    delegateAddress: getAddress(budget.delegateAddress as Address),
-    delegatorSmartAccount: getAddress(budget.delegatorSmartAccount as Address),
-    periodStartedAt: allowance.periodStartedAt,
-    periodEndsAt: allowance.periodEndsAt,
-    lastSettlementAt: budget.lastSettlementAt ?? null,
-    lastRevokedAt: budget.lastRevokedAt ?? null,
+    status:
+      disabled || budget.status === 'revoked' || onchainBudget.revoked
+        ? 'revoked'
+        : expired
+          ? 'expired'
+          : 'active',
+    budgetType: contractEnumToDelegatedBudgetType(Number(onchainBudget.budgetType)),
+    interval: contractEnumToDelegatedBudgetInterval(Number(onchainBudget.interval)),
+    configuredAmountUsdCents: atomicToUsdCents(onchainBudget.configuredAmount),
+    remainingAmountUsdCents: atomicToUsdCents(onchainBudget.remainingAmount),
+    ownerAddress: getAddress(onchainBudget.owner),
+    delegateAddress: getAddress(onchainBudget.delegate),
+    delegatorSmartAccount: getAddress(onchainBudget.delegatorSmartAccount),
+    periodStartedAt:
+      onchainBudget.periodStartAt > 0n
+        ? Number(onchainBudget.periodStartAt) * 1000
+        : null,
+    periodEndsAt:
+      onchainBudget.periodEndsAt > 0n
+        ? Number(onchainBudget.periodEndsAt) * 1000
+        : null,
+    lastSettlementAt:
+      onchainBudget.lastSettlementAt > 0n
+        ? Number(onchainBudget.lastSettlementAt) * 1000
+        : null,
+    lastRevokedAt:
+      onchainBudget.lastRevokedAt > 0n
+        ? Number(onchainBudget.lastRevokedAt) * 1000
+        : null,
   } satisfies DelegatedBudgetOnchainState
 }
 
@@ -651,28 +627,34 @@ export async function assertDelegatedBudgetAllowanceOrThrow(args: {
 }
 
 function buildSettlementExecutionCallData(args: {
+  contractBudgetId: string
   amountUsdCents: number
-  treasuryAddress: string
+  settlementId: Hex
 }) {
-  const treasuryAddress = getAddress(args.treasuryAddress as Address)
-
   return encodeFunctionData({
-    abi: erc20TransferAbi,
-    functionName: 'transfer',
-    args: [treasuryAddress, usdCentsToUsdcAtomic(args.amountUsdCents)],
+    abi: delegatedBudgetContractAbi,
+    functionName: 'settleBudget',
+    args: [
+      args.contractBudgetId as Hex,
+      args.settlementId,
+      usdCentsToUsdcAtomic(args.amountUsdCents),
+    ],
   })
 }
 
 async function submitDelegatedBudgetSettlementLocally(args: {
+  contractBudgetId: string
   delegationJson: string
   amountUsdCents: number
-  treasuryAddress: string
+  settlementId: Hex
+  settlementContract: string
 }) {
-  const { delegatedBudget, environment, publicClient, walletClient } =
+  const { environment, publicClient, walletClient } =
     createLocalOnchainClients()
   const callData = buildSettlementExecutionCallData({
+    contractBudgetId: args.contractBudgetId,
     amountUsdCents: args.amountUsdCents,
-    treasuryAddress: args.treasuryAddress,
+    settlementId: args.settlementId,
   })
   const delegation = parseDelegation(args.delegationJson)
   const txHash = await redeemDelegations(
@@ -684,7 +666,7 @@ async function submitDelegatedBudgetSettlementLocally(args: {
         permissionContext: [delegation],
         executions: [
           createExecution({
-            target: delegatedBudget.tokenAddress as Address,
+            target: getAddress(args.settlementContract as Address),
             callData,
             value: 0n,
           }),
@@ -709,6 +691,7 @@ async function submitDelegatedBudgetSettlementViaSignerService(args: {
   delegationJson: string
   amountUsdCents: number
   settlementId: Hex
+  settlementContract: string
   treasuryAddress: string
 }) {
   const signerService = resolveSignerServiceConfig()
@@ -734,6 +717,7 @@ async function submitDelegatedBudgetSettlementViaSignerService(args: {
         chainId: chain.id,
         rpcUrl: resolveRpcUrl(chain),
         tokenAddress: delegatedBudget.tokenAddress,
+        settlementContract: args.settlementContract,
         treasuryAddress: args.treasuryAddress,
         contractBudgetId: args.contractBudgetId,
         delegationJson: args.delegationJson,
@@ -785,6 +769,7 @@ export async function settleDelegatedBudgetOnchain(args: {
   )
 
   const settlementId = buildDelegatedBudgetSettlementId(args.idempotencyKey)
+  const settlementContract = resolveSettlementContractAddress(args.budget)
   const treasuryAddress =
     args.budget.treasuryAddress ||
     getDelegatedBudgetEnvironmentConfig().treasuryAddress
@@ -805,12 +790,15 @@ export async function settleDelegatedBudgetOnchain(args: {
             delegationJson: args.budget.delegationJson,
             amountUsdCents: args.amountUsdCents,
             settlementId,
+            settlementContract,
             treasuryAddress,
           })
         : await submitDelegatedBudgetSettlementLocally({
+            contractBudgetId: args.budget.contractBudgetId,
             delegationJson: args.budget.delegationJson,
             amountUsdCents: args.amountUsdCents,
-            treasuryAddress,
+            settlementId,
+            settlementContract,
           })
   } catch (error) {
     const message =

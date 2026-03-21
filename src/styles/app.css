@@ -81,6 +81,53 @@
   }
 }
 
+/* Wallet pill glass shimmer + balance magnify on hover */
+@keyframes glass-shimmer {
+  0% {
+    transform: translateX(-100%) skewX(-15deg);
+  }
+  100% {
+    transform: translateX(250%) skewX(-15deg);
+  }
+}
+
+.wallet-pill {
+  position: relative;
+  overflow: hidden;
+}
+
+.wallet-pill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0) 20%,
+    rgba(255, 255, 255, 0.45) 50%,
+    rgba(255, 255, 255, 0) 80%,
+    transparent 100%
+  );
+  transform: translateX(-100%) skewX(-15deg);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.wallet-pill:hover::after {
+  opacity: 1;
+  animation: glass-shimmer 0.7s ease-out forwards;
+}
+
+.wallet-pill .wallet-balance {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.wallet-pill:hover .wallet-balance {
+  transform: scale(1.2);
+}
+
 /* Logo yellow fill animation on hover */
 .logo-yellow {
   fill-opacity: 0;
