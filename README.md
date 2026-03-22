@@ -128,6 +128,30 @@ contracts/
 docs/               Fumadocs documentation site
 ```
 
+## Hackathon Submission
+
+**Tracks:**
+- 🎭 Venice — Private Agents, Trusted Actions (prizes: 1,000/600/400 VVV)
+- 🦊 MetaMask — Best Use of Delegations ($3,000 / $1,500 / $500)
+- 🌟 Synthesis Open Track — $28,133+ community pool
+
+**Live Demo:** [agents.buddytools.org](https://agents.buddytools.org/) *(currently on testnet — users need whitelist access)*
+
+**Showcase Video:** [https://x.com/Francesco_Oddo/status/2034994244503347594](https://x.com/Francesco_Oddo/status/2034994244503347594)
+
+**Repo:** [github.com/oxfrancesco/buddypie2](https://github.com/oxfrancesco/buddypie2)
+
+### Submission Metadata
+
+| Field | Value |
+|---|---|
+| agentFramework | OpenCode (AI agent runtime) |
+| agentHarness | openclaw |
+| model | minimax-m2.7, venice-gpt-5.3-codex, venice-claude-sonnet-4.6, venice-minimax-m2.7 |
+| skills | convex, shadcn, cloudflare, deploying-contracts-on-base, frontend-design, find-docs |
+| tools | React 19, TanStack Router/Start, Convex, Clerk, Daytona SDK, OpenCode SDK, MetaMask Delegation Toolkit, x402, Viem, Foundry/Solidity, Base chain, Tailwind CSS 4, Radix UI, shadcn/ui, Fumadocs |
+| helpfulResources | Convex docs, MetaMask Delegation Toolkit docs, x402 protocol docs, Daytona SDK docs, Clerk + Convex auth guide |
+
 ## TL;DR
 
 BuddyPie gives you a one-click AI coding session on any repo. Pick a repo, pick a preset, hit launch. The sandbox boots, the agent reads the codebase, does the work, and pushes a branch you can PR from.
