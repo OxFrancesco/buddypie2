@@ -24,6 +24,10 @@ type GetAppPreviewCommandSuggestionInput = {
   port: number
 }
 
+type ReadSandboxArtifactInput = {
+  sandboxId: string
+}
+
 type CreateTerminalAccessInput = {
   sandboxId: string
   expiresInMinutes?: number
@@ -179,6 +183,15 @@ export const getAppPreviewCommandSuggestion = createServerFn({ method: 'POST' })
     return await getAppPreviewCommandSuggestionForSandbox({
       sandboxId: data.sandboxId,
       port,
+    })
+  })
+
+export const readSandboxArtifact = createServerFn({ method: 'POST' })
+  .inputValidator((data: ReadSandboxArtifactInput) => data)
+  .handler(async ({ data }) => {
+    const { readSandboxArtifactForSandbox } = await import('./runtime.server')
+    return await readSandboxArtifactForSandbox({
+      sandboxId: data.sandboxId,
     })
   })
 

@@ -100,6 +100,42 @@ describe('resolveOpenCodeLaunchConfig', () => {
     expect(launchEnvironment.GITHUB_OAUTH_ACCOUNT_NAME).toBeUndefined()
     expect(launchEnvironment.GITHUB_OAUTH_ACCOUNT_ID).toBeUndefined()
   })
+
+  test('throws before sandbox creation when the nansen preset key is missing', () => {
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key'
+    delete process.env.NANSEN_API_KEY
+
+    expect(() =>
+      resolveOpenCodeLaunchConfig({
+        agentPresetId: 'nansen-analyst',
+        agentProvider: 'openrouter',
+        agentModel: 'minimax/minimax-m2.7',
+      }),
+    ).toThrow('NANSEN_API_KEY is not configured on the server.')
+  })
+
+  test('injects both the model key and the nansen key for the nansen preset', () => {
+    process.env.OPENROUTER_API_KEY = 'test-openrouter-key'
+    process.env.NANSEN_API_KEY = 'test-nansen-key'
+
+    expect(
+      resolveOpenCodeLaunchConfig({
+        agentPresetId: 'nansen-analyst',
+        agentProvider: 'openrouter',
+        agentModel: 'minimax/minimax-m2.7',
+      }),
+    ).toMatchObject({
+      preset: {
+        id: 'nansen-analyst',
+        provider: 'openrouter',
+        model: 'minimax/minimax-m2.7',
+      },
+      launchEnvironment: {
+        OPENROUTER_API_KEY: 'test-openrouter-key',
+        NANSEN_API_KEY: 'test-nansen-key',
+      },
+    })
+  })
 })
 
 describe('buildOpenCodeSessionPreviewUrl', () => {

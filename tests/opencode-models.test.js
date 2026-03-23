@@ -69,6 +69,22 @@ describe('preset model defaults', () => {
     )
   })
 
+  test('defines the nansen preset with artifact guidance and the extra API key requirement', () => {
+    const preset = getOpenCodeAgentPreset('nansen-analyst')
+
+    expect(preset).toMatchObject({
+      defaultModelOptionId: 'openrouter-minimax-m2.7',
+      provider: 'openrouter',
+      model: 'minimax/minimax-m2.7',
+    })
+    expect(preset.requiredEnv).toEqual(
+      expect.arrayContaining(['OPENROUTER_API_KEY', 'NANSEN_API_KEY']),
+    )
+    expect(preset.instructionsMd).toContain('.buddypie/artifacts/current.json')
+    expect(preset.instructionsMd).toContain('write it atomically')
+    expect(preset.starterPrompt).toContain('.buddypie/artifacts/current.json')
+  })
+
   test('adds the shared delivery workflow to every preset prompt and instructions', () => {
     for (const preset of openCodeAgentPresets) {
       expect(preset.agentPrompt).toContain(

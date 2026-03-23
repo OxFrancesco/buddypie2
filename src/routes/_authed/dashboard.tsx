@@ -405,7 +405,7 @@ function DashboardRoute() {
               <div
                 role="radiogroup"
                 aria-label="OpenCode preset agent"
-                className="grid gap-3 md:grid-cols-3"
+                className="grid gap-3 md:grid-cols-2 xl:grid-cols-4"
               >
                 {openCodeAgentPresets.map((preset) => {
                   const isSelected = preset.id === agentPresetId
