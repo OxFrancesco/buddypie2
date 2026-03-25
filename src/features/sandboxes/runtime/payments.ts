@@ -1,214 +1,261 @@
 import { randomUUID } from 'node:crypto'
 import { api } from 'convex/_generated/api'
 import type { Doc, Id } from 'convex/_generated/dataModel'
+import { Effect, Exit, Ref } from 'effect'
+import {
+  BillingService,
+  ConvexService,
+} from '~/lib/server/effect/services'
+import {
+  PaymentError,
+  SandboxError,
+} from '~/lib/server/effect/errors'
 import {
   getBillingEventPriceUsdCents,
   type BillingPaymentMethod,
 } from '../../../../convex/lib/billingConfig'
-import { getAuthenticatedConvexClient } from '~/lib/server/authenticated-convex'
-import {
-  assertDelegatedBudgetAllowanceOrThrow,
-  settleDelegatedBudgetOnchain,
-} from '~/lib/server/delegated-budget'
 
-export async function requireDelegatedBudgetAllowance(args: {
-  requiredAmountUsdCents: number
-  actionLabel: string
-}): Promise<Doc<'delegatedBudgets'>> {
-  const { convex } = await getAuthenticatedConvexClient()
-  const delegatedBudget = await convex.query(
-    api.billing.currentDelegatedBudget,
-    {},
-  )
-
-  if (!delegatedBudget) {
-    throw new Error(
-      'Set up an active delegated budget before using that payment rail.',
-    )
-  }
-
-  await assertDelegatedBudgetAllowanceOrThrow({
-    budget: delegatedBudget,
-    requiredAmountUsdCents: args.requiredAmountUsdCents,
-    actionLabel: args.actionLabel,
-  })
-
-  return delegatedBudget
+function normalizeUnknownMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : fallback
 }
 
-export async function withPaidSandboxAction<T>(args: {
+function billingMutation<T>(options: {
+  try: () => Promise<T>
+  fallback: string
+}) {
+  return Effect.tryPromise({
+    try: options.try,
+    catch: (error) =>
+      new PaymentError({
+        message: normalizeUnknownMessage(error, options.fallback),
+        cause: error,
+      }),
+  })
+}
+
+export function requireDelegatedBudgetAllowance(args: {
+  requiredAmountUsdCents: number
+  actionLabel: string
+}) {
+  return Effect.flatMap(BillingService, (billing) =>
+    billing.requireDelegatedBudgetAllowance(args),
+  )
+}
+
+export function withPaidSandboxAction<T, R>(args: {
   sandboxId: Id<'sandboxes'>
   agentPresetId: string
   eventType: 'preview_boot' | 'ssh_access' | 'web_terminal'
   paymentMethod: BillingPaymentMethod
   quantitySummary?: string
   description: string
-  action: () => Promise<T>
+  action: Effect.Effect<T, SandboxError, R>
   shouldCapture?: (result: T) => boolean
   releaseReason?: string
 }) {
-  const { convex } = await getAuthenticatedConvexClient()
-  const amountUsdCents = getBillingEventPriceUsdCents(
-    args.agentPresetId,
-    args.eventType,
-  )
+  return Effect.gen(function*() {
+    const convex = yield* ConvexService
+    const billing = yield* BillingService
+    const amountUsdCents = getBillingEventPriceUsdCents(
+      args.agentPresetId,
+      args.eventType,
+    )
 
-  if (args.paymentMethod === 'x402') {
-    return await args.action()
-  }
+    if (args.paymentMethod === 'x402') {
+      return yield* args.action
+    }
 
-  if (args.paymentMethod === 'delegated_budget') {
-    let delegatedBudget: Awaited<
-      ReturnType<typeof requireDelegatedBudgetAllowance>
-    > | null = null
-    if (!args.shouldCapture) {
-      delegatedBudget = await requireDelegatedBudgetAllowance({
+    if (args.paymentMethod === 'delegated_budget') {
+      let delegatedBudget: Doc<'delegatedBudgets'> | null = null
+
+      if (!args.shouldCapture) {
+        delegatedBudget = yield* billing.requireDelegatedBudgetAllowance({
+          requiredAmountUsdCents: amountUsdCents,
+          actionLabel: args.description,
+        })
+      }
+
+      const result = yield* args.action
+
+      if (args.shouldCapture && !args.shouldCapture(result)) {
+        return result
+      }
+
+      delegatedBudget ??= yield* billing.requireDelegatedBudgetAllowance({
         requiredAmountUsdCents: amountUsdCents,
         actionLabel: args.description,
       })
-    }
 
-    const result = await args.action()
+      const idempotencyKey = `${args.eventType}:${args.sandboxId}:${randomUUID()}`
+      const settlement = yield* billing.settleDelegatedBudgetOnchain({
+        budget: delegatedBudget,
+        amountUsdCents,
+        idempotencyKey,
+      })
 
-    if (args.shouldCapture && !args.shouldCapture(result)) {
+      yield* billingMutation({
+        try: () =>
+          convex.context.convex.mutation(api.billing.recordDelegatedBudgetCharge, {
+            delegatedBudgetId: delegatedBudget._id,
+            sandboxId: args.sandboxId,
+            agentPresetId: args.agentPresetId,
+            eventType: args.eventType,
+            amountUsdCents,
+            idempotencyKey,
+            description: args.description,
+            quantitySummary: args.quantitySummary,
+            settlementId: settlement.settlementId,
+            txHash: settlement.txHash,
+            remainingAmountUsdCents: settlement.budget.remainingAmountUsdCents,
+            ...(settlement.budget.periodStartedAt
+              ? { periodStartedAt: settlement.budget.periodStartedAt }
+              : {}),
+            ...(settlement.budget.periodEndsAt
+              ? { periodEndsAt: settlement.budget.periodEndsAt }
+              : {}),
+            ...(settlement.budget.lastSettlementAt
+              ? { settledAt: settlement.budget.lastSettlementAt }
+              : {}),
+            metadataJson: JSON.stringify({
+              contractBudgetId: delegatedBudget.contractBudgetId,
+            }),
+          }),
+        fallback:
+          'BuddyPie could not record the delegated-budget charge after settlement.',
+      })
+
       return result
     }
 
-    delegatedBudget ??= await requireDelegatedBudgetAllowance({
-      requiredAmountUsdCents: amountUsdCents,
-      actionLabel: args.description,
-    })
-
-    const idempotencyKey = `${args.eventType}:${args.sandboxId}:${randomUUID()}`
-    const settlement = await settleDelegatedBudgetOnchain({
-      budget: delegatedBudget,
-      amountUsdCents,
-      idempotencyKey,
-    })
-
-    await convex.mutation(api.billing.recordDelegatedBudgetCharge, {
-      delegatedBudgetId: delegatedBudget._id,
-      sandboxId: args.sandboxId,
-      agentPresetId: args.agentPresetId,
-      eventType: args.eventType,
-      amountUsdCents,
-      idempotencyKey,
-      description: args.description,
-      quantitySummary: args.quantitySummary,
-      settlementId: settlement.settlementId,
-      txHash: settlement.txHash,
-      remainingAmountUsdCents: settlement.budget.remainingAmountUsdCents,
-      ...(settlement.budget.periodStartedAt
-        ? { periodStartedAt: settlement.budget.periodStartedAt }
-        : {}),
-      ...(settlement.budget.periodEndsAt
-        ? { periodEndsAt: settlement.budget.periodEndsAt }
-        : {}),
-      ...(settlement.budget.lastSettlementAt
-        ? { settledAt: settlement.budget.lastSettlementAt }
-        : {}),
-      metadataJson: JSON.stringify({
-        contractBudgetId: delegatedBudget.contractBudgetId,
+    const holdStateRef = yield* Ref.make<'held' | 'released' | 'captured'>(
+      'held',
+    )
+    const hold = yield* Effect.acquireRelease(
+      billingMutation({
+        try: () =>
+          convex.context.convex.mutation(api.billing.holdCredits, {
+            sandboxId: args.sandboxId,
+            agentPresetId: args.agentPresetId,
+            purpose: args.eventType,
+            amountUsdCents,
+            idempotencyKey: `${args.eventType}:${args.sandboxId}:${Date.now()}`,
+            quantitySummary: args.quantitySummary,
+            description: args.description,
+          }),
+        fallback: 'BuddyPie could not create the credit hold for this action.',
       }),
-    })
+      (hold, exit) =>
+        Effect.gen(function*() {
+          const holdState = yield* Ref.get(holdStateRef)
 
-    return result
-  }
+          if (holdState !== 'held' || Exit.isSuccess(exit)) {
+            return
+          }
 
-  const hold = await convex.mutation(api.billing.holdCredits, {
-    sandboxId: args.sandboxId,
-    agentPresetId: args.agentPresetId,
-    purpose: args.eventType,
-    amountUsdCents,
-    idempotencyKey: `${args.eventType}:${args.sandboxId}:${Date.now()}`,
-    quantitySummary: args.quantitySummary,
-    description: args.description,
-  })
+          yield* billingMutation({
+            try: () =>
+              convex.context.convex.mutation(api.billing.releaseCreditHold, {
+                holdId: hold._id,
+                reason:
+                  args.releaseReason ?? `${args.eventType} failed before capture.`,
+              }),
+            fallback:
+              'BuddyPie could not release the credit hold after the action failed.',
+          }).pipe(Effect.catchAll(() => Effect.void))
+        }),
+    )
 
-  try {
-    const result = await args.action()
+    const result = yield* args.action
 
     if (args.shouldCapture && !args.shouldCapture(result)) {
-      await convex.mutation(api.billing.releaseCreditHold, {
-        holdId: hold._id,
-        reason:
-          args.releaseReason ?? `No charge captured for ${args.eventType}.`,
+      yield* billingMutation({
+        try: () =>
+          convex.context.convex.mutation(api.billing.releaseCreditHold, {
+            holdId: hold._id,
+            reason:
+              args.releaseReason ?? `No charge captured for ${args.eventType}.`,
+          }),
+        fallback: 'BuddyPie could not release the unused credit hold.',
       })
+      yield* Ref.set(holdStateRef, 'released')
 
       return result
     }
 
-    await convex.mutation(api.billing.captureCreditHold, {
-      holdId: hold._id,
-      sandboxId: args.sandboxId,
-      eventType: args.eventType,
-      idempotencyKey: `capture:${hold.idempotencyKey}`,
-      description: args.description,
-      quantitySummary: args.quantitySummary,
-      costUsdCents: amountUsdCents,
+    yield* billingMutation({
+      try: () =>
+        convex.context.convex.mutation(api.billing.captureCreditHold, {
+          holdId: hold._id,
+          sandboxId: args.sandboxId,
+          eventType: args.eventType,
+          idempotencyKey: `capture:${hold.idempotencyKey}`,
+          description: args.description,
+          quantitySummary: args.quantitySummary,
+          costUsdCents: amountUsdCents,
+        }),
+      fallback: 'BuddyPie could not capture the credit hold for this action.',
     })
+    yield* Ref.set(holdStateRef, 'captured')
 
     return result
-  } catch (error) {
-    try {
-      await convex.mutation(api.billing.releaseCreditHold, {
-        holdId: hold._id,
-        reason:
-          args.releaseReason ?? `${args.eventType} failed before capture.`,
-      })
-    } catch {
-      // Best effort cleanup if the action throws after the hold is created.
-    }
-
-    throw error
-  }
+  })
 }
 
-export async function captureDelegatedLaunchCharge(args: {
+export function captureDelegatedLaunchCharge(args: {
   sandboxId: Id<'sandboxes'>
   agentPresetId: string
   repoName: string
   repoBranch?: string
 }) {
-  const amountUsdCents = getBillingEventPriceUsdCents(
-    args.agentPresetId,
-    'sandbox_launch',
-  )
-  const delegatedBudget = await requireDelegatedBudgetAllowance({
-    requiredAmountUsdCents: amountUsdCents,
-    actionLabel: `launching OpenCode for ${args.repoName}`,
-  })
-  const { convex } = await getAuthenticatedConvexClient()
-  const idempotencyKey = `sandbox_launch:${args.sandboxId}:${randomUUID()}`
-  const settlement = await settleDelegatedBudgetOnchain({
-    budget: delegatedBudget,
-    amountUsdCents,
-    idempotencyKey,
-  })
+  return Effect.gen(function*() {
+    const convex = yield* ConvexService
+    const billing = yield* BillingService
+    const amountUsdCents = getBillingEventPriceUsdCents(
+      args.agentPresetId,
+      'sandbox_launch',
+    )
+    const delegatedBudget = yield* billing.requireDelegatedBudgetAllowance({
+      requiredAmountUsdCents: amountUsdCents,
+      actionLabel: `launching OpenCode for ${args.repoName}`,
+    })
+    const idempotencyKey = `sandbox_launch:${args.sandboxId}:${randomUUID()}`
+    const settlement = yield* billing.settleDelegatedBudgetOnchain({
+      budget: delegatedBudget,
+      amountUsdCents,
+      idempotencyKey,
+    })
 
-  await convex.mutation(api.billing.recordDelegatedBudgetCharge, {
-    delegatedBudgetId: delegatedBudget._id,
-    sandboxId: args.sandboxId,
-    agentPresetId: args.agentPresetId,
-    eventType: 'sandbox_launch',
-    amountUsdCents,
-    idempotencyKey,
-    description: `OpenCode sandbox launch for ${args.repoName}`,
-    quantitySummary: args.repoBranch ?? 'no repository attached',
-    settlementId: settlement.settlementId,
-    txHash: settlement.txHash,
-    remainingAmountUsdCents: settlement.budget.remainingAmountUsdCents,
-    ...(settlement.budget.periodStartedAt
-      ? { periodStartedAt: settlement.budget.periodStartedAt }
-      : {}),
-    ...(settlement.budget.periodEndsAt
-      ? { periodEndsAt: settlement.budget.periodEndsAt }
-      : {}),
-    ...(settlement.budget.lastSettlementAt
-      ? { settledAt: settlement.budget.lastSettlementAt }
-      : {}),
-    metadataJson: JSON.stringify({
-      contractBudgetId: delegatedBudget.contractBudgetId,
-    }),
+    yield* billingMutation({
+      try: () =>
+        convex.context.convex.mutation(api.billing.recordDelegatedBudgetCharge, {
+          delegatedBudgetId: delegatedBudget._id,
+          sandboxId: args.sandboxId,
+          agentPresetId: args.agentPresetId,
+          eventType: 'sandbox_launch',
+          amountUsdCents,
+          idempotencyKey,
+          description: `OpenCode sandbox launch for ${args.repoName}`,
+          quantitySummary: args.repoBranch ?? 'no repository attached',
+          settlementId: settlement.settlementId,
+          txHash: settlement.txHash,
+          remainingAmountUsdCents: settlement.budget.remainingAmountUsdCents,
+          ...(settlement.budget.periodStartedAt
+            ? { periodStartedAt: settlement.budget.periodStartedAt }
+            : {}),
+          ...(settlement.budget.periodEndsAt
+            ? { periodEndsAt: settlement.budget.periodEndsAt }
+            : {}),
+          ...(settlement.budget.lastSettlementAt
+            ? { settledAt: settlement.budget.lastSettlementAt }
+            : {}),
+          metadataJson: JSON.stringify({
+            contractBudgetId: delegatedBudget.contractBudgetId,
+          }),
+        }),
+      fallback:
+        'BuddyPie could not record the delegated-budget sandbox launch charge.',
+    })
   })
 }

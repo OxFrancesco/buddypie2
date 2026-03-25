@@ -9,7 +9,7 @@
     "dev:web": "vite dev",
     "dev:convex": "bun --env-file=.env.local x convex dev",
     "build": "vite build && tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test tests/*.test.js",
     "start": "node .output/server/index.mjs",
     "format": "prettier --write .",
     "lint": "tsc && eslint .  --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
@@ -35,6 +35,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "convex": "^1.33.0",
+    "effect": "^3.21.0",
     "lucide-react": "^0.577.0",
     "radix-ui": "^1.4.3",
     "react": "^19.2.4",

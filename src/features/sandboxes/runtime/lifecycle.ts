@@ -1,21 +1,26 @@
 import { api } from 'convex/_generated/api'
-import type { Doc, Id } from 'convex/_generated/dataModel'
+import type { Doc } from 'convex/_generated/dataModel'
+import { Cause, Effect, Exit, Ref } from 'effect'
+import type { CreateSandboxInput } from '~/lib/sandboxes'
+import {
+  ConvexService,
+  DaytonaService,
+} from '~/lib/server/effect/services'
+import {
+  ExternalServiceError,
+  SandboxError,
+  ValidationError,
+  toConvexFailureMessage,
+} from '~/lib/server/effect/errors'
 import {
   getBillingEventPriceUsdCents,
   type BillingPaymentMethod,
 } from '../../../../convex/lib/billingConfig'
-import type { CreateSandboxInput } from '~/lib/sandboxes'
 import {
   getSafeOpenCodeAgentPreset,
   resolveOpenCodeModelOption,
 } from '~/lib/opencode/presets'
 import { normalizeSandboxInput } from '~/lib/sandboxes'
-import { getAuthenticatedConvexClient } from '~/lib/server/authenticated-convex'
-import {
-  createOpenCodeSandbox,
-  deleteOpenCodeSandbox,
-  resolveOpenCodeLaunchConfig,
-} from '~/lib/server/daytona'
 import { getGithubLaunchAuth } from './github'
 import {
   captureDelegatedLaunchCharge,
@@ -31,12 +36,39 @@ type LaunchedSandbox = {
   opencodeSessionId?: string
 }
 
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) {
-    return error.message
-  }
+function normalizeUnknownMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : fallback
+}
 
-  return 'Something went wrong while talking to Daytona.'
+function sandboxMutation<T>(options: {
+  try: () => Promise<T>
+  fallback: string
+}) {
+  return Effect.tryPromise({
+    try: options.try,
+    catch: (error) =>
+      new SandboxError({
+        message: normalizeUnknownMessage(error, options.fallback),
+        cause: error,
+      }),
+  })
+}
+
+function githubAuthEffect(userId: string) {
+  return Effect.tryPromise({
+    try: () => getGithubLaunchAuth(userId),
+    catch: (error) =>
+      new ExternalServiceError({
+        service: 'GitHub',
+        message: normalizeUnknownMessage(
+          error,
+          'GitHub could not complete that request.',
+        ),
+        cause: error,
+      }),
+  })
 }
 
 function resolveSandboxPreset(input: {
@@ -46,284 +78,365 @@ function resolveSandboxPreset(input: {
   agentModel?: string
   initialPrompt?: string
 }) {
-  const preset = getSafeOpenCodeAgentPreset(input.agentPresetId)
-  const modelOption = resolveOpenCodeModelOption({
-    provider: input.agentProvider,
-    model: input.agentModel,
-    fallbackProvider: preset.provider,
-    fallbackModel: preset.model,
-  })
+  return Effect.try({
+    try: () => {
+      const preset = getSafeOpenCodeAgentPreset(input.agentPresetId)
+      const modelOption = resolveOpenCodeModelOption({
+        provider: input.agentProvider,
+        model: input.agentModel,
+        fallbackProvider: preset.provider,
+        fallbackModel: preset.model,
+      })
 
-  return {
-    agentPresetId: preset.id,
-    agentLabel: input.agentLabel ?? preset.label,
-    agentProvider: modelOption.provider,
-    agentModel: modelOption.model,
-    initialPrompt: input.initialPrompt?.trim() || preset.starterPrompt,
-  }
+      return {
+        agentPresetId: preset.id,
+        agentLabel: input.agentLabel ?? preset.label,
+        agentProvider: modelOption.provider,
+        agentModel: modelOption.model,
+        initialPrompt: input.initialPrompt?.trim() || preset.starterPrompt,
+      }
+    },
+    catch: (error) =>
+      new ValidationError({
+        message: normalizeUnknownMessage(
+          error,
+          'The sandbox preset configuration is invalid.',
+        ),
+        cause: error,
+      }),
+  })
 }
 
-async function launchSandboxLifecycle(args: {
+function launchSandboxLifecycle(args: {
   normalized: ReturnType<typeof normalizeSandboxInput>
   paymentMethod: BillingPaymentMethod
 }) {
-  const { convex, userId } = await getAuthenticatedConvexClient()
-  await convex.mutation(api.user.ensureCurrentUser, {})
-  let pendingSandbox: Doc<'sandboxes'> | null = null
-  let launched: LaunchedSandbox | null = null
+  return Effect.scoped(
+    Effect.gen(function*() {
+      const convex = yield* ConvexService
+      const daytona = yield* DaytonaService
+      yield* convex.ensureCurrentUser
 
-  try {
-    if (args.paymentMethod === 'delegated_budget') {
-      await requireDelegatedBudgetAllowance({
-        requiredAmountUsdCents: getBillingEventPriceUsdCents(
-          args.normalized.agentPresetId,
-          'sandbox_launch',
-        ),
-        actionLabel: `launching ${args.normalized.repoName}`,
-      })
-    }
+      const pendingSandboxRef = yield* Ref.make<Doc<'sandboxes'> | null>(null)
+      const launchedSandboxRef = yield* Ref.make<LaunchedSandbox | null>(null)
+      const completedRef = yield* Ref.make(false)
 
-    const githubAuth =
-      args.normalized.repoProvider === 'github'
-        ? await getGithubLaunchAuth(userId)
-        : null
-    resolveOpenCodeLaunchConfig({
-      agentPresetId: args.normalized.agentPresetId,
-      agentProvider: args.normalized.agentProvider,
-      agentModel: args.normalized.agentModel,
-      githubAuth,
-    })
-    pendingSandbox = await convex.mutation(api.sandboxes.createPending, {
-      repoName: args.normalized.repoName,
-      agentPresetId: args.normalized.agentPresetId,
-      agentLabel: args.normalized.agentLabel,
-      agentProvider: args.normalized.agentProvider,
-      agentModel: args.normalized.agentModel,
-      initialPrompt: args.normalized.initialPrompt,
-      paymentMethod: args.paymentMethod,
-      ...(args.normalized.repoUrl ? { repoUrl: args.normalized.repoUrl } : {}),
-      ...(args.normalized.branch ? { repoBranch: args.normalized.branch } : {}),
-      ...(args.normalized.repoProvider
-        ? { repoProvider: args.normalized.repoProvider }
-        : {}),
-    })
-    launched = await createOpenCodeSandbox({
-      repoUrl: args.normalized.repoUrl,
-      branch: args.normalized.branch,
-      agentPresetId: args.normalized.agentPresetId,
-      agentProvider: args.normalized.agentProvider,
-      agentModel: args.normalized.agentModel,
-      initialPrompt: args.normalized.initialPrompt,
-      githubAuth,
-    })
+      yield* Effect.addFinalizer((exit) =>
+        Effect.gen(function*() {
+          if (Exit.isSuccess(exit) || (yield* Ref.get(completedRef))) {
+            return
+          }
 
-    if (args.paymentMethod === 'delegated_budget') {
-      await captureDelegatedLaunchCharge({
-        sandboxId: pendingSandbox._id,
-        agentPresetId: args.normalized.agentPresetId,
-        repoName: args.normalized.repoName,
-        repoBranch: args.normalized.branch,
-      })
-    }
+          const launched = yield* Ref.get(launchedSandboxRef)
 
-    const readySandbox = await convex.mutation(api.sandboxes.markReady, {
-      sandboxId: pendingSandbox._id,
-      daytonaSandboxId: launched.daytonaSandboxId,
-      previewUrl: launched.previewUrl,
-      previewUrlPattern: launched.previewUrlPattern,
-      workspacePath: launched.workspacePath,
-      previewAppPath: launched.previewAppPath,
-      opencodeSessionId: launched.opencodeSessionId,
-    })
+          if (launched?.daytonaSandboxId) {
+            yield* daytona.deleteOpenCodeSandbox(launched.daytonaSandboxId).pipe(
+              Effect.catchAll(() => Effect.void),
+            )
+          }
 
-    return {
-      sandboxId: readySandbox._id,
-      previewUrl: readySandbox.previewUrl ?? launched.previewUrl,
-      agentPresetId:
-        readySandbox.agentPresetId ?? args.normalized.agentPresetId,
-    }
-  } catch (error) {
-    const message = getErrorMessage(error)
+          const pendingSandbox = yield* Ref.get(pendingSandboxRef)
 
-    if (launched?.daytonaSandboxId) {
-      try {
-        await deleteOpenCodeSandbox(launched.daytonaSandboxId)
-      } catch {
-        // Best effort cleanup if the post-launch persistence step fails.
+          if (pendingSandbox) {
+            yield* sandboxMutation({
+              try: () =>
+                convex.context.convex.mutation(api.sandboxes.markFailed, {
+                  sandboxId: pendingSandbox._id,
+                  errorMessage: toConvexFailureMessage(Cause.squash(exit.cause)),
+                }),
+              fallback: 'BuddyPie could not persist the sandbox failure state.',
+            }).pipe(Effect.catchAll(() => Effect.void))
+          }
+        }),
+      )
+
+      if (args.paymentMethod === 'delegated_budget') {
+        yield* requireDelegatedBudgetAllowance({
+          requiredAmountUsdCents: getBillingEventPriceUsdCents(
+            args.normalized.agentPresetId,
+            'sandbox_launch',
+          ),
+          actionLabel: `launching ${args.normalized.repoName}`,
+        })
       }
-    }
 
-    if (pendingSandbox) {
-      await convex.mutation(api.sandboxes.markFailed, {
-        sandboxId: pendingSandbox._id,
-        errorMessage: message,
+      const githubAuth =
+        args.normalized.repoProvider === 'github'
+          ? yield* githubAuthEffect(convex.context.userId)
+          : null
+
+      yield* daytona.resolveOpenCodeLaunchConfig({
+        agentPresetId: args.normalized.agentPresetId,
+        agentProvider: args.normalized.agentProvider,
+        agentModel: args.normalized.agentModel,
+        githubAuth,
       })
-    }
 
-    throw new Error(message)
-  }
+      const pendingSandbox = yield* sandboxMutation({
+        try: () =>
+          convex.context.convex.mutation(api.sandboxes.createPending, {
+            repoName: args.normalized.repoName,
+            agentPresetId: args.normalized.agentPresetId,
+            agentLabel: args.normalized.agentLabel,
+            agentProvider: args.normalized.agentProvider,
+            agentModel: args.normalized.agentModel,
+            initialPrompt: args.normalized.initialPrompt,
+            paymentMethod: args.paymentMethod,
+            ...(args.normalized.repoUrl
+              ? { repoUrl: args.normalized.repoUrl }
+              : {}),
+            ...(args.normalized.branch
+              ? { repoBranch: args.normalized.branch }
+              : {}),
+            ...(args.normalized.repoProvider
+              ? { repoProvider: args.normalized.repoProvider }
+              : {}),
+          }),
+        fallback: 'BuddyPie could not create the pending sandbox record.',
+      })
+      yield* Ref.set(pendingSandboxRef, pendingSandbox)
+
+      const launched = yield* daytona.createOpenCodeSandbox({
+        repoUrl: args.normalized.repoUrl,
+        branch: args.normalized.branch,
+        agentPresetId: args.normalized.agentPresetId,
+        agentProvider: args.normalized.agentProvider,
+        agentModel: args.normalized.agentModel,
+        initialPrompt: args.normalized.initialPrompt,
+        githubAuth,
+      })
+      yield* Ref.set(launchedSandboxRef, launched)
+
+      if (args.paymentMethod === 'delegated_budget') {
+        yield* captureDelegatedLaunchCharge({
+          sandboxId: pendingSandbox._id,
+          agentPresetId: args.normalized.agentPresetId,
+          repoName: args.normalized.repoName,
+          repoBranch: args.normalized.branch,
+        })
+      }
+
+      const readySandbox = yield* sandboxMutation({
+        try: () =>
+          convex.context.convex.mutation(api.sandboxes.markReady, {
+            sandboxId: pendingSandbox._id,
+            daytonaSandboxId: launched.daytonaSandboxId,
+            previewUrl: launched.previewUrl,
+            previewUrlPattern: launched.previewUrlPattern,
+            workspacePath: launched.workspacePath,
+            previewAppPath: launched.previewAppPath,
+            opencodeSessionId: launched.opencodeSessionId,
+          }),
+        fallback: 'BuddyPie could not persist the launched sandbox.',
+      })
+
+      yield* Ref.set(completedRef, true)
+
+      return {
+        sandboxId: readySandbox._id,
+        previewUrl: readySandbox.previewUrl ?? launched.previewUrl,
+        agentPresetId:
+          readySandbox.agentPresetId ?? args.normalized.agentPresetId,
+      }
+    }),
+  )
 }
 
-async function restartSandboxLifecycle(args: {
+function restartSandboxLifecycle(args: {
   sandboxId: string
   paymentMethod: BillingPaymentMethod
 }) {
-  const { convex, userId } = await getAuthenticatedConvexClient()
-  const sandbox = await convex.query(api.sandboxes.get, {
-    sandboxId: args.sandboxId as Id<'sandboxes'>,
-  })
+  return Effect.scoped(
+    Effect.gen(function*() {
+      const convex = yield* ConvexService
+      const daytona = yield* DaytonaService
+      const sandbox = yield* convex.getOwnedSandbox(args.sandboxId)
+      const restartPreset = yield* resolveSandboxPreset(sandbox)
 
-  if (!sandbox) {
-    throw new Error('Sandbox not found.')
-  }
+      const pendingSandboxRef = yield* Ref.make<Doc<'sandboxes'> | null>(null)
+      const launchedSandboxRef = yield* Ref.make<LaunchedSandbox | null>(null)
+      const completedRef = yield* Ref.make(false)
 
-  const restartPreset = resolveSandboxPreset(sandbox)
-  let pendingSandbox: Doc<'sandboxes'> | null = null
-  let launched: LaunchedSandbox | null = null
+      yield* Effect.addFinalizer((exit) =>
+        Effect.gen(function*() {
+          if (Exit.isSuccess(exit) || (yield* Ref.get(completedRef))) {
+            return
+          }
 
-  try {
-    if (args.paymentMethod === 'delegated_budget') {
-      await requireDelegatedBudgetAllowance({
-        requiredAmountUsdCents: getBillingEventPriceUsdCents(
-          restartPreset.agentPresetId,
-          'sandbox_launch',
-        ),
-        actionLabel: `restarting ${sandbox.repoName}`,
-      })
-    }
+          const launched = yield* Ref.get(launchedSandboxRef)
 
-    const githubAuth =
-      sandbox.repoProvider === 'github'
-        ? await getGithubLaunchAuth(userId)
-        : null
-    resolveOpenCodeLaunchConfig({
-      agentPresetId: restartPreset.agentPresetId,
-      agentProvider: restartPreset.agentProvider,
-      agentModel: restartPreset.agentModel,
-      githubAuth,
-    })
-    pendingSandbox = await convex.mutation(api.sandboxes.createPending, {
-      repoName: sandbox.repoName,
-      agentPresetId: restartPreset.agentPresetId,
-      agentLabel: restartPreset.agentLabel,
-      agentProvider: restartPreset.agentProvider,
-      agentModel: restartPreset.agentModel,
-      initialPrompt: restartPreset.initialPrompt,
-      paymentMethod: args.paymentMethod,
-      ...(sandbox.repoUrl ? { repoUrl: sandbox.repoUrl } : {}),
-      ...(sandbox.repoBranch ? { repoBranch: sandbox.repoBranch } : {}),
-      ...(sandbox.repoProvider ? { repoProvider: sandbox.repoProvider } : {}),
-    })
-    launched = await createOpenCodeSandbox({
-      repoUrl: sandbox.repoUrl,
-      branch: sandbox.repoBranch,
-      agentPresetId: restartPreset.agentPresetId,
-      agentProvider: restartPreset.agentProvider,
-      agentModel: restartPreset.agentModel,
-      initialPrompt: restartPreset.initialPrompt,
-      githubAuth,
-    })
+          if (launched?.daytonaSandboxId) {
+            yield* daytona.deleteOpenCodeSandbox(launched.daytonaSandboxId).pipe(
+              Effect.catchAll(() => Effect.void),
+            )
+          }
 
-    if (args.paymentMethod === 'delegated_budget') {
-      await captureDelegatedLaunchCharge({
-        sandboxId: pendingSandbox._id,
+          const pendingSandbox = yield* Ref.get(pendingSandboxRef)
+
+          if (pendingSandbox) {
+            yield* sandboxMutation({
+              try: () =>
+                convex.context.convex.mutation(api.sandboxes.markFailed, {
+                  sandboxId: pendingSandbox._id,
+                  errorMessage: toConvexFailureMessage(Cause.squash(exit.cause)),
+                }),
+              fallback: 'BuddyPie could not persist the sandbox failure state.',
+            }).pipe(Effect.catchAll(() => Effect.void))
+          }
+        }),
+      )
+
+      if (args.paymentMethod === 'delegated_budget') {
+        yield* requireDelegatedBudgetAllowance({
+          requiredAmountUsdCents: getBillingEventPriceUsdCents(
+            restartPreset.agentPresetId,
+            'sandbox_launch',
+          ),
+          actionLabel: `restarting ${sandbox.repoName}`,
+        })
+      }
+
+      const githubAuth =
+        sandbox.repoProvider === 'github'
+          ? yield* githubAuthEffect(convex.context.userId)
+          : null
+
+      yield* daytona.resolveOpenCodeLaunchConfig({
         agentPresetId: restartPreset.agentPresetId,
-        repoName: sandbox.repoName,
-        repoBranch: sandbox.repoBranch,
+        agentProvider: restartPreset.agentProvider,
+        agentModel: restartPreset.agentModel,
+        githubAuth,
       })
-    }
 
-    const readySandbox = await convex.mutation(api.sandboxes.markReady, {
-      sandboxId: pendingSandbox._id,
-      daytonaSandboxId: launched.daytonaSandboxId,
-      previewUrl: launched.previewUrl,
-      previewUrlPattern: launched.previewUrlPattern,
-      workspacePath: launched.workspacePath,
-      previewAppPath: launched.previewAppPath,
-      opencodeSessionId: launched.opencodeSessionId,
-    })
-
-    if (sandbox.daytonaSandboxId) {
-      try {
-        await deleteOpenCodeSandbox(sandbox.daytonaSandboxId)
-      } catch {
-        // Keep the new sandbox even if deleting the old runtime fails.
-      }
-    }
-
-    await convex.mutation(api.sandboxes.remove, {
-      sandboxId: sandbox._id,
-    })
-
-    return {
-      sandboxId: readySandbox._id,
-      previewUrl: readySandbox.previewUrl ?? launched.previewUrl,
-      agentPresetId: readySandbox.agentPresetId ?? restartPreset.agentPresetId,
-    }
-  } catch (error) {
-    const message = getErrorMessage(error)
-
-    if (launched?.daytonaSandboxId) {
-      try {
-        await deleteOpenCodeSandbox(launched.daytonaSandboxId)
-      } catch {
-        // Best effort cleanup if the post-launch persistence step fails.
-      }
-    }
-
-    if (pendingSandbox) {
-      await convex.mutation(api.sandboxes.markFailed, {
-        sandboxId: pendingSandbox._id,
-        errorMessage: message,
+      const pendingSandbox = yield* sandboxMutation({
+        try: () =>
+          convex.context.convex.mutation(api.sandboxes.createPending, {
+            repoName: sandbox.repoName,
+            agentPresetId: restartPreset.agentPresetId,
+            agentLabel: restartPreset.agentLabel,
+            agentProvider: restartPreset.agentProvider,
+            agentModel: restartPreset.agentModel,
+            initialPrompt: restartPreset.initialPrompt,
+            paymentMethod: args.paymentMethod,
+            ...(sandbox.repoUrl ? { repoUrl: sandbox.repoUrl } : {}),
+            ...(sandbox.repoBranch ? { repoBranch: sandbox.repoBranch } : {}),
+            ...(sandbox.repoProvider
+              ? { repoProvider: sandbox.repoProvider }
+              : {}),
+          }),
+        fallback: 'BuddyPie could not create the replacement sandbox record.',
       })
-    }
+      yield* Ref.set(pendingSandboxRef, pendingSandbox)
 
-    throw new Error(message)
-  }
+      const launched = yield* daytona.createOpenCodeSandbox({
+        repoUrl: sandbox.repoUrl,
+        branch: sandbox.repoBranch,
+        agentPresetId: restartPreset.agentPresetId,
+        agentProvider: restartPreset.agentProvider,
+        agentModel: restartPreset.agentModel,
+        initialPrompt: restartPreset.initialPrompt,
+        githubAuth,
+      })
+      yield* Ref.set(launchedSandboxRef, launched)
+
+      if (args.paymentMethod === 'delegated_budget') {
+        yield* captureDelegatedLaunchCharge({
+          sandboxId: pendingSandbox._id,
+          agentPresetId: restartPreset.agentPresetId,
+          repoName: sandbox.repoName,
+          repoBranch: sandbox.repoBranch,
+        })
+      }
+
+      const readySandbox = yield* sandboxMutation({
+        try: () =>
+          convex.context.convex.mutation(api.sandboxes.markReady, {
+            sandboxId: pendingSandbox._id,
+            daytonaSandboxId: launched.daytonaSandboxId,
+            previewUrl: launched.previewUrl,
+            previewUrlPattern: launched.previewUrlPattern,
+            workspacePath: launched.workspacePath,
+            previewAppPath: launched.previewAppPath,
+            opencodeSessionId: launched.opencodeSessionId,
+          }),
+        fallback: 'BuddyPie could not persist the replacement sandbox.',
+      })
+
+      if (sandbox.daytonaSandboxId) {
+        yield* daytona.deleteOpenCodeSandbox(sandbox.daytonaSandboxId).pipe(
+          Effect.catchAll(() => Effect.void),
+        )
+      }
+
+      yield* sandboxMutation({
+        try: () =>
+          convex.context.convex.mutation(api.sandboxes.remove, {
+            sandboxId: sandbox._id,
+          }),
+        fallback: 'BuddyPie could not remove the previous sandbox record.',
+      })
+
+      yield* Ref.set(completedRef, true)
+
+      return {
+        sandboxId: readySandbox._id,
+        previewUrl: readySandbox.previewUrl ?? launched.previewUrl,
+        agentPresetId: readySandbox.agentPresetId ?? restartPreset.agentPresetId,
+      }
+    }),
+  )
 }
 
-export async function createSandboxWithPayment(
+export function createSandboxWithPayment(
   input: CreateSandboxInput,
   paymentMethod: BillingPaymentMethod,
 ) {
-  const normalized = normalizeSandboxInput(input)
-
-  return await launchSandboxLifecycle({
-    normalized,
-    paymentMethod,
-  })
+  return Effect.try({
+    try: () => normalizeSandboxInput(input),
+    catch: (error) =>
+      new ValidationError({
+        message: normalizeUnknownMessage(error, 'Sandbox input is invalid.'),
+        cause: error,
+      }),
+  }).pipe(
+    Effect.flatMap((normalized) =>
+      launchSandboxLifecycle({
+        normalized,
+        paymentMethod,
+      }),
+    ),
+  )
 }
 
-export async function deleteSandboxRuntime(sandboxId: string) {
-  const { convex } = await getAuthenticatedConvexClient()
-  const sandbox = await convex.query(api.sandboxes.get, {
-    sandboxId: sandboxId as Id<'sandboxes'>,
-  })
+export function deleteSandboxRuntime(sandboxId: string) {
+  return Effect.gen(function*() {
+    const convex = yield* ConvexService
+    const daytona = yield* DaytonaService
+    const sandbox = yield* convex.getOwnedSandbox(sandboxId)
 
-  if (!sandbox) {
-    throw new Error('Sandbox not found.')
-  }
-
-  if (sandbox.daytonaSandboxId) {
-    try {
-      await deleteOpenCodeSandbox(sandbox.daytonaSandboxId)
-    } catch {
-      // Best effort cleanup so stale Daytona sandboxes do not block record deletion.
+    if (sandbox.daytonaSandboxId) {
+      yield* daytona.deleteOpenCodeSandbox(sandbox.daytonaSandboxId).pipe(
+        Effect.catchAll(() => Effect.void),
+      )
     }
-  }
 
-  await convex.mutation(api.sandboxes.remove, {
-    sandboxId: sandbox._id,
+    yield* sandboxMutation({
+      try: () =>
+        convex.context.convex.mutation(api.sandboxes.remove, {
+          sandboxId: sandbox._id,
+        }),
+      fallback: 'BuddyPie could not remove the sandbox record.',
+    })
+
+    return { removed: true as const }
   })
-
-  return { removed: true as const }
 }
 
-export async function restartSandboxWithPayment(
+export function restartSandboxWithPayment(
   sandboxId: string,
   paymentMethod: BillingPaymentMethod,
 ) {
-  return await restartSandboxLifecycle({
+  return restartSandboxLifecycle({
     sandboxId,
     paymentMethod,
   })
