@@ -14,6 +14,7 @@ import type * as http from "../http.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_billing from "../lib/billing.js";
 import type * as lib_billingConfig from "../lib/billingConfig.js";
+import type * as marketplace from "../marketplace.js";
 import type * as sandboxes from "../sandboxes.js";
 import type * as user from "../user.js";
 
@@ -30,6 +31,7 @@ declare const fullApi: ApiFromModules<{
   "lib/auth": typeof lib_auth;
   "lib/billing": typeof lib_billing;
   "lib/billingConfig": typeof lib_billingConfig;
+  marketplace: typeof marketplace;
   sandboxes: typeof sandboxes;
   user: typeof user;
 }>;

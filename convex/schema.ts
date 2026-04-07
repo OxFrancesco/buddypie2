@@ -1,6 +1,68 @@
 import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
 
+const openCodeSkillPermissionValidator = v.union(
+  v.literal('allow'),
+  v.literal('ask'),
+  v.literal('deny'),
+)
+
+const openCodeManagedSkillValidator = v.object({
+  id: v.string(),
+  name: v.string(),
+  description: v.string(),
+  content: v.string(),
+  permission: v.optional(openCodeSkillPermissionValidator),
+})
+
+const openCodeManagedMcpValidator = v.object({
+  command: v.string(),
+  args: v.optional(v.array(v.string())),
+  env: v.optional(v.array(v.string())),
+})
+
+const openCodeWorkspaceBootstrapValidator = v.object({
+  kind: v.literal('fumadocs-docs-app'),
+  sourceRepoUrl: v.string(),
+  sourceRepoBranch: v.string(),
+  sourceRepoPath: v.string(),
+  docsTemplate: v.literal('tanstack-start'),
+  preferredDocsPath: v.string(),
+  fallbackDocsPath: v.string(),
+  packageManager: v.union(v.literal('bun'), v.literal('npm')),
+})
+
+const marketplaceCompositionValidator = v.object({
+  personaModuleId: v.string(),
+  customAgentPrompt: v.optional(v.string()),
+  customInstructionsMd: v.optional(v.string()),
+  starterPrompt: v.string(),
+  starterPromptPlaceholder: v.string(),
+  repositoryOptional: v.boolean(),
+  defaultModelOptionId: v.string(),
+  skillModuleIds: v.array(v.string()),
+  mcpModuleIds: v.array(v.string()),
+  workspaceBootstrapModuleIds: v.array(v.string()),
+})
+
+const launchableAgentDefinitionValidator = v.object({
+  id: v.string(),
+  label: v.string(),
+  description: v.string(),
+  repositoryOptional: v.optional(v.boolean()),
+  defaultModelOptionId: v.string(),
+  provider: v.string(),
+  model: v.string(),
+  requiredEnv: v.array(v.string()),
+  agentPrompt: v.string(),
+  instructionsMd: v.string(),
+  starterPrompt: v.string(),
+  starterPromptPlaceholder: v.string(),
+  skills: v.array(openCodeManagedSkillValidator),
+  mcp: v.record(v.string(), openCodeManagedMcpValidator),
+  workspaceBootstrap: v.optional(openCodeWorkspaceBootstrapValidator),
+})
+
 export default defineSchema({
   users: defineTable({
     tokenIdentifier: v.string(),
@@ -19,6 +81,15 @@ export default defineSchema({
     repoName: v.string(),
     repoBranch: v.optional(v.string()),
     repoProvider: v.optional(v.union(v.literal('github'), v.literal('git'))),
+    agentSourceKind: v.optional(
+      v.union(
+        v.literal('builtin'),
+        v.literal('marketplace_draft'),
+        v.literal('marketplace_version'),
+      ),
+    ),
+    marketplaceAgentId: v.optional(v.id('marketplaceAgents')),
+    marketplaceVersionId: v.optional(v.id('marketplaceAgentVersions')),
     agentPresetId: v.optional(v.string()),
     agentLabel: v.optional(v.string()),
     agentProvider: v.optional(v.string()),
@@ -53,6 +124,55 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index('by_user_and_created_at', ['userId', 'createdAt']),
+
+  marketplaceAgents: defineTable({
+    creatorUserId: v.id('users'),
+    slug: v.string(),
+    name: v.string(),
+    shortDescription: v.string(),
+    descriptionMd: v.optional(v.string()),
+    tags: v.array(v.string()),
+    icon: v.optional(v.string()),
+    draftComposition: marketplaceCompositionValidator,
+    defaultModelOptionId: v.string(),
+    reviewStatus: v.union(
+      v.literal('draft'),
+      v.literal('pending_review'),
+      v.literal('changes_requested'),
+      v.literal('approved'),
+    ),
+    publicStatus: v.union(v.literal('private'), v.literal('published')),
+    currentPublishedVersionId: v.optional(v.id('marketplaceAgentVersions')),
+    publishedAt: v.optional(v.number()),
+    reviewerUserId: v.optional(v.id('users')),
+    reviewNotes: v.optional(v.string()),
+    clonedFromKind: v.optional(
+      v.union(v.literal('builtin'), v.literal('marketplace_version')),
+    ),
+    clonedFromBuiltinPresetId: v.optional(v.string()),
+    clonedFromAgentId: v.optional(v.id('marketplaceAgents')),
+    clonedFromVersionId: v.optional(v.id('marketplaceAgentVersions')),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index('by_creator_and_updated_at', ['creatorUserId', 'updatedAt'])
+    .index('by_slug', ['slug'])
+    .index('by_public_status_and_published_at', ['publicStatus', 'publishedAt'])
+    .index('by_review_status_and_updated_at', ['reviewStatus', 'updatedAt']),
+
+  marketplaceAgentVersions: defineTable({
+    agentId: v.id('marketplaceAgents'),
+    versionNumber: v.number(),
+    compositionSnapshot: marketplaceCompositionValidator,
+    resolvedDefinitionSnapshot: launchableAgentDefinitionValidator,
+    releaseNotes: v.optional(v.string()),
+    reviewerUserId: v.id('users'),
+    approvedAt: v.number(),
+    publishedAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index('by_agent_and_version_number', ['agentId', 'versionNumber'])
+    .index('by_agent_and_created_at', ['agentId', 'createdAt']),
 
   creditAccounts: defineTable({
     userId: v.id('users'),

@@ -1,3 +1,5 @@
+import type { AgentSourceKind } from '~/lib/opencode/presets'
+
 export type PreviewBootResult = {
   status: 'already-running' | 'started'
   port: number
@@ -61,6 +63,9 @@ export type SandboxDetailRecord = {
   repoBranch?: string | null
   repoProvider?: string | null
   agentPresetId?: string | null
+  agentSourceKind?: AgentSourceKind | null
+  marketplaceAgentId?: string | null
+  marketplaceVersionId?: string | null
   agentLabel?: string | null
   agentProvider?: string | null
   agentModel?: string | null

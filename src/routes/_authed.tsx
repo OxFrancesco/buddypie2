@@ -82,58 +82,75 @@ function AuthedLayout() {
             />
             <span>BuddyPie</span>
           </Link>
-          <Link
-            to="/profile"
-            className="wallet-pill group flex shrink-0 items-center gap-3 rounded-full border-2 border-foreground bg-background py-1.5 pl-1.5 pr-4 shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
-          >
-            <UserButton
-              appearance={{
-                elements: {
-                  userButtonBox: 'flex items-center',
-                  userButtonTrigger:
-                    'rounded-full overflow-hidden border-0 shadow-none pointer-events-none',
-                  userButtonPopoverFooter: { display: 'none' },
-                  userButtonPopoverFooterPages: { display: 'none' },
-                  userButtonPopoverAction: { display: 'none' },
-                },
-              }}
-              userProfileProps={{
-                appearance: {
+          <div className="flex items-center gap-3">
+            <nav className="flex flex-wrap items-center gap-2">
+              <Link
+                to="/dashboard"
+                className="border-2 border-foreground bg-background px-3 py-2 text-xs font-black uppercase tracking-widest shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+              >
+                Dashboard
+              </Link>
+              <Link
+                to="/marketplace"
+                className="border-2 border-foreground bg-background px-3 py-2 text-xs font-black uppercase tracking-widest shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+              >
+                Marketplace
+              </Link>
+            </nav>
+
+            <Link
+              to="/profile"
+              className="wallet-pill group flex shrink-0 items-center gap-3 rounded-full border-2 border-foreground bg-background py-1.5 pl-1.5 pr-4 shadow-[2px_2px_0_var(--foreground)] transition-all hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none"
+            >
+              <UserButton
+                appearance={{
                   elements: {
-                    rootBox: 'border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]',
-                    card: 'border-2 border-foreground',
-                    navbar: 'border-b-2 border-foreground',
-                    pageScrollBox: 'border-0',
-                    footer: { display: 'none' },
-                    footerAction: { display: 'none' },
-                    formButtonPrimary:
-                      'border-2 border-foreground bg-foreground text-background font-black uppercase tracking-wider shadow-[4px_4px_0_var(--foreground)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none',
-                    formButtonReset:
-                      'border-2 border-foreground font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none',
+                    userButtonBox: 'flex items-center',
+                    userButtonTrigger:
+                      'rounded-full overflow-hidden border-0 shadow-none pointer-events-none',
+                    userButtonPopoverFooter: { display: 'none' },
+                    userButtonPopoverFooterPages: { display: 'none' },
+                    userButtonPopoverAction: { display: 'none' },
                   },
-                },
-                additionalOAuthScopes: {
-                  github: ['repo'],
-                },
-              }}
-            />
-            <div className="flex flex-col items-end leading-tight">
-              <span className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors group-hover:text-foreground">
-                Wallet
-              </span>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">
-                  USDC
+                }}
+                userProfileProps={{
+                  appearance: {
+                    elements: {
+                      rootBox: 'border-2 border-foreground shadow-[4px_4px_0_var(--foreground)]',
+                      card: 'border-2 border-foreground',
+                      navbar: 'border-b-2 border-foreground',
+                      pageScrollBox: 'border-0',
+                      footer: { display: 'none' },
+                      footerAction: { display: 'none' },
+                      formButtonPrimary:
+                        'border-2 border-foreground bg-foreground text-background font-black uppercase tracking-wider shadow-[4px_4px_0_var(--foreground)] hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-none',
+                      formButtonReset:
+                        'border-2 border-foreground font-bold uppercase shadow-[2px_2px_0_var(--foreground)] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-none',
+                    },
+                  },
+                  additionalOAuthScopes: {
+                    github: ['repo'],
+                  },
+                }}
+              />
+              <div className="flex flex-col items-end leading-tight">
+                <span className="text-xs font-black uppercase tracking-widest text-muted-foreground transition-colors group-hover:text-foreground">
+                  Wallet
                 </span>
-                <span className="wallet-balance inline-block origin-left text-[11px] font-black tabular-nums text-foreground">
-                  {walletUsdcBalance?.balanceUsdCents === null ||
-                  walletUsdcBalance?.balanceUsdCents === undefined
-                    ? '--'
-                    : formatUsdCents(walletUsdcBalance.balanceUsdCents)}
-                </span>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-muted-foreground">
+                    USDC
+                  </span>
+                  <span className="wallet-balance inline-block origin-left text-[11px] font-black tabular-nums text-foreground">
+                    {walletUsdcBalance?.balanceUsdCents === null ||
+                    walletUsdcBalance?.balanceUsdCents === undefined
+                      ? '--'
+                      : formatUsdCents(walletUsdcBalance.balanceUsdCents)}
+                  </span>
+                </div>
               </div>
-            </div>
-          </Link>
+            </Link>
+          </div>
         </div>
       </header>
 

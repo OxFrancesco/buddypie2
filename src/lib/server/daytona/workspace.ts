@@ -1,9 +1,6 @@
 import { posix as pathPosix } from 'node:path'
 import type { Sandbox } from '@daytonaio/sdk'
-import type {
-  OpenCodeAgentPreset,
-  OpenCodeAgentPresetId,
-} from '~/lib/opencode/presets'
+import type { LaunchableAgentDefinition } from '~/lib/opencode/presets'
 import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
 import {
   ensureDirectoryInGitignore,
@@ -14,7 +11,7 @@ import {
 import {
   buildSandboxWorkBranchName,
   getWorkspacePath,
-  normalizeSandboxInput,
+  normalizeSandboxInputWithDefinition,
 } from '~/lib/sandboxes'
 import { buildManagedWorkspaceInstructionsContent } from './launch-config'
 import {
@@ -222,7 +219,7 @@ CI=1 "$BUN_BIN" x create-fumadocs-app ${quoteShellArg(args.docsAppPath)} --templ
 export async function bootstrapWorkspace(args: {
   sandbox: Sandbox
   workspacePath: string
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
 }): Promise<WorkspaceBootstrapResult> {
   const bootstrap = args.preset.workspaceBootstrap
 
@@ -278,7 +275,7 @@ export async function bootstrapWorkspace(args: {
 async function hideManagedFilesFromGitStatus(
   sandbox: Sandbox,
   workspacePath: string,
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
 ) {
   const excludePath = pathPosix.join(workspacePath, '.git/info/exclude')
   const patterns = [
@@ -311,7 +308,7 @@ async function hideManagedFilesFromGitStatus(
 export async function writeManagedWorkspaceFiles(
   sandbox: Sandbox,
   workspacePath: string,
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
   repositoryContext?: RepositoryRuntimeContext,
 ) {
@@ -346,7 +343,7 @@ export async function writeManagedWorkspaceFiles(
 }
 
 export function buildManagedSandboxToolingInstallCommand(
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
 ) {
   const commandLines = [
     'set -e',
@@ -398,7 +395,7 @@ export function buildManagedSandboxToolingInstallCommand(
 export async function installManagedSandboxTooling(args: {
   sandbox: Sandbox
   workspacePath: string
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
   launchEnvironment?: Record<string, string>
 }) {
   const installCommand = buildManagedSandboxToolingInstallCommand(args.preset)
@@ -422,15 +419,15 @@ async function cloneRepository(args: {
   sandbox: Sandbox
   repoUrl?: string
   branch?: string
-  agentPresetId: OpenCodeAgentPresetId
+  definition: LaunchableAgentDefinition
   initialPrompt?: string
   githubAuth?: GitHubLaunchAuth | null
 }) {
-  const normalized = normalizeSandboxInput({
+  const normalized = normalizeSandboxInputWithDefinition({
     repoUrl: args.repoUrl,
     branch: args.branch,
-    agentPresetId: args.agentPresetId,
     initialPrompt: args.initialPrompt,
+    definition: args.definition,
   })
   const repoUrl = normalized.repoUrl
   const workspacePath = getWorkspacePath(normalized.repoName)
@@ -481,12 +478,12 @@ async function cloneRepository(args: {
 
 async function prepareStandaloneWorkspace(args: {
   sandbox: Sandbox
-  agentPresetId: OpenCodeAgentPresetId
+  definition: LaunchableAgentDefinition
   initialPrompt?: string
 }) {
-  const normalized = normalizeSandboxInput({
-    agentPresetId: args.agentPresetId,
+  const normalized = normalizeSandboxInputWithDefinition({
     initialPrompt: args.initialPrompt,
+    definition: args.definition,
   })
   const workspacePath = getWorkspacePath(normalized.repoName)
 
@@ -503,14 +500,14 @@ export async function prepareSandboxWorkspace(args: {
   sandbox: Sandbox
   repoUrl?: string
   branch?: string
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
   initialPrompt?: string
   githubAuth?: GitHubLaunchAuth | null
 }) {
   if (!args.repoUrl?.trim()) {
     return await prepareStandaloneWorkspace({
       sandbox: args.sandbox,
-      agentPresetId: args.preset.id,
+      definition: args.preset,
       initialPrompt: args.initialPrompt,
     })
   }
@@ -519,7 +516,7 @@ export async function prepareSandboxWorkspace(args: {
     sandbox: args.sandbox,
     repoUrl: args.repoUrl,
     branch: args.branch,
-    agentPresetId: args.preset.id,
+    definition: args.preset,
     initialPrompt: args.initialPrompt,
     githubAuth: args.githubAuth,
   })

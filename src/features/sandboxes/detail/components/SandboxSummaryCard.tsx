@@ -16,6 +16,7 @@ import type { SandboxDetailRecord } from '../types'
 export function SandboxSummaryCard(props: {
   sandbox: SandboxDetailRecord
   presetLabel: string
+  sourceLabel: string
   paymentMethod: SandboxPaymentMethod
   providerLabel: string
   modelLabel: string
@@ -45,6 +46,12 @@ export function SandboxSummaryCard(props: {
                 className="border-2 border-foreground font-bold uppercase tracking-widest"
               >
                 {props.presetLabel}
+              </Badge>
+              <Badge
+                variant="outline"
+                className="border-2 border-foreground font-bold uppercase tracking-widest"
+              >
+                {props.sourceLabel}
               </Badge>
               <Badge
                 variant="outline"

@@ -14,6 +14,19 @@ export type OpenCodeManagedMcp = {
   env?: Array<string>
 }
 
+export type AgentSourceKind =
+  | 'builtin'
+  | 'marketplace_draft'
+  | 'marketplace_version'
+
+export type MarketplaceReviewStatus =
+  | 'draft'
+  | 'pending_review'
+  | 'changes_requested'
+  | 'approved'
+
+export type MarketplacePublicStatus = 'private' | 'published'
+
 export type OpenCodeDocsWorkspaceBootstrap = {
   kind: 'fumadocs-docs-app'
   sourceRepoUrl: string
@@ -55,3 +68,5 @@ export type OpenCodeAgentPresetDefinition = {
   mcp: Record<string, OpenCodeManagedMcp>
   workspaceBootstrap?: OpenCodeWorkspaceBootstrap
 }
+
+export type LaunchableAgentDefinition = OpenCodeAgentPresetDefinition

@@ -3,6 +3,11 @@ import type { Doc, Id } from 'convex/_generated/dataModel'
 import type { getAuthenticatedConvexClient } from '~/lib/server/authenticated-convex'
 import { Context, Effect, Layer } from 'effect'
 import {
+  buildApprovedMarketplaceSnapshot,
+  isMarketplaceReviewer,
+  resolveMarketplaceLaunchSelection,
+} from '~/lib/server/marketplace'
+import {
   assertDelegatedBudgetAllowanceOrThrow,
   settleDelegatedBudgetOnchain,
 } from '~/lib/server/delegated-budget'
@@ -27,11 +32,14 @@ import {
   ExternalServiceError,
   PaymentError,
   SandboxError,
+  ValidationError,
 } from './errors'
 import {
   getBillingEventPriceUsdCents,
   type BillingEventType,
 } from '../../../../convex/lib/billingConfig'
+import type { MarketplaceLaunchSelection } from '~/lib/opencode/marketplace'
+import type { LaunchableAgentDefinition } from '~/lib/opencode/presets'
 
 export type AuthenticatedServerContext = Awaited<
   ReturnType<typeof getAuthenticatedConvexClient>
@@ -95,9 +103,7 @@ export interface DaytonaService {
   ) => Effect.Effect<void, SandboxError>
   resolveOpenCodeLaunchConfig: (
     args: {
-      agentPresetId: string
-      agentProvider?: string
-      agentModel?: string
+      definition: LaunchableAgentDefinition
       githubAuth?: GitHubLaunchAuth | null
     },
   ) => Effect.Effect<
@@ -176,6 +182,34 @@ export interface BillingService {
 
 export const BillingService =
   Context.GenericTag<BillingService>('buddyPie/BillingService')
+
+export interface MarketplaceService {
+  resolveLaunchSelection: (
+    selection: MarketplaceLaunchSelection,
+  ) => Effect.Effect<
+    {
+      sourceKind: 'builtin' | 'marketplace_draft' | 'marketplace_version'
+      definition: LaunchableAgentDefinition
+      marketplaceAgentId?: Id<'marketplaceAgents'>
+      marketplaceVersionId?: Id<'marketplaceAgentVersions'>
+    },
+    ValidationError | ExternalServiceError
+  >
+  buildApprovedSnapshot: (args: {
+    agentId: Id<'marketplaceAgents'>
+  }) => Effect.Effect<
+    {
+      agent: Doc<'marketplaceAgents'>
+      compositionSnapshot: Doc<'marketplaceAgents'>['draftComposition']
+      resolvedDefinitionSnapshot: LaunchableAgentDefinition
+    },
+    ValidationError | ExternalServiceError
+  >
+  requireReviewer: Effect.Effect<void, AuthError>
+}
+
+export const MarketplaceService =
+  Context.GenericTag<MarketplaceService>('buddyPie/MarketplaceService')
 
 type X402Payment = Awaited<ReturnType<typeof requireX402Payment>>
 type SuccessfulX402Payment = Extract<X402Payment, { ok: true }>
@@ -572,6 +606,55 @@ const X402ServiceLive = Layer.succeed(X402Service, {
       }),
   })
 
+const MarketplaceServiceLive = Layer.effect(
+  MarketplaceService,
+  Effect.gen(function*() {
+    const auth = yield* AuthService
+
+    return {
+      resolveLaunchSelection: (selection) =>
+        Effect.tryPromise({
+          try: () =>
+            resolveMarketplaceLaunchSelection({
+              client: auth.context,
+              selection,
+            }),
+          catch: (error) =>
+            new ValidationError({
+              message: normalizeUnknownMessage(
+                error,
+                'Marketplace launch selection is invalid.',
+              ),
+              cause: error,
+            }),
+        }),
+      buildApprovedSnapshot: ({ agentId }) =>
+        Effect.tryPromise({
+          try: () =>
+            buildApprovedMarketplaceSnapshot({
+              convex: auth.context.convex,
+              agentId,
+            }),
+          catch: (error) =>
+            new ValidationError({
+              message: normalizeUnknownMessage(
+                error,
+                'Marketplace publication snapshot is invalid.',
+              ),
+              cause: error,
+            }),
+        }),
+      requireReviewer: isMarketplaceReviewer(auth.context.userId)
+        ? Effect.void
+        : Effect.fail(
+            new AuthError({
+              message: 'Only Marketplace reviewers can do that.',
+            }),
+          ),
+    } satisfies MarketplaceService
+  }),
+).pipe(Layer.provide(AuthServiceLive))
+
 export const ServerServicesLive = Layer.mergeAll(
   EnvServiceLive,
   AuthServiceLive,
@@ -579,4 +662,5 @@ export const ServerServicesLive = Layer.mergeAll(
   DaytonaServiceLive,
   BillingServiceLive,
   X402ServiceLive,
+  MarketplaceServiceLive,
 )

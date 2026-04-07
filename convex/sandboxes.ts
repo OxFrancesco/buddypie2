@@ -18,6 +18,15 @@ export const sandboxRecordValidator = v.object({
   repoName: v.string(),
   repoBranch: v.optional(v.string()),
   repoProvider: v.optional(v.union(v.literal('github'), v.literal('git'))),
+  agentSourceKind: v.optional(
+    v.union(
+      v.literal('builtin'),
+      v.literal('marketplace_draft'),
+      v.literal('marketplace_version'),
+    ),
+  ),
+  marketplaceAgentId: v.optional(v.id('marketplaceAgents')),
+  marketplaceVersionId: v.optional(v.id('marketplaceAgentVersions')),
   agentPresetId: v.optional(v.string()),
   agentLabel: v.optional(v.string()),
   agentProvider: v.optional(v.string()),
@@ -113,6 +122,15 @@ export const createPending = mutation({
     repoName: v.string(),
     repoBranch: v.optional(v.string()),
     repoProvider: v.optional(v.union(v.literal('github'), v.literal('git'))),
+    agentSourceKind: v.optional(
+      v.union(
+        v.literal('builtin'),
+        v.literal('marketplace_draft'),
+        v.literal('marketplace_version'),
+      ),
+    ),
+    marketplaceAgentId: v.optional(v.id('marketplaceAgents')),
+    marketplaceVersionId: v.optional(v.id('marketplaceAgentVersions')),
     agentPresetId: v.string(),
     agentLabel: v.string(),
     agentProvider: v.string(),
@@ -131,6 +149,13 @@ export const createPending = mutation({
     const sandboxId = await ctx.db.insert('sandboxes', {
       userId: user._id,
       repoName: args.repoName,
+      ...(args.agentSourceKind ? { agentSourceKind: args.agentSourceKind } : {}),
+      ...(args.marketplaceAgentId
+        ? { marketplaceAgentId: args.marketplaceAgentId }
+        : {}),
+      ...(args.marketplaceVersionId
+        ? { marketplaceVersionId: args.marketplaceVersionId }
+        : {}),
       agentPresetId: args.agentPresetId,
       agentLabel: args.agentLabel,
       agentProvider: args.agentProvider,

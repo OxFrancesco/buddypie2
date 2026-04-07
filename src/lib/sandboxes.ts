@@ -1,4 +1,9 @@
-import type { OpenCodeAgentPresetId } from '~/lib/opencode/presets'
+import type { MarketplaceLaunchSelection } from '~/lib/opencode/marketplace'
+import type {
+  AgentSourceKind,
+  LaunchableAgentDefinition,
+  OpenCodeAgentPresetId,
+} from '~/lib/opencode/presets'
 import {
   getOpenCodeAgentPreset,
   resolveOpenCodeModelOption,
@@ -31,17 +36,98 @@ export function isWalletManagedSandboxPaymentMethod(
 export type CreateSandboxInput = {
   repoUrl?: string
   branch?: string
-  agentPresetId: OpenCodeAgentPresetId
+  agentPresetId?: OpenCodeAgentPresetId
+  launchSelection?: MarketplaceLaunchSelection
   agentProvider?: string
   agentModel?: string
   initialPrompt?: string
   paymentMethod?: SandboxPaymentMethod
 }
 
+export function normalizeSandboxInputWithDefinition(args: {
+  repoUrl?: string
+  branch?: string
+  initialPrompt?: string
+  definition: LaunchableAgentDefinition
+}) {
+  const repoUrl = args.repoUrl?.trim() || undefined
+  const branch = repoUrl ? args.branch?.trim() || undefined : undefined
+  const modelOption = resolveOpenCodeModelOption({
+    provider: args.definition.provider,
+    model: args.definition.model,
+    fallbackProvider: args.definition.provider,
+    fallbackModel: args.definition.model,
+  })
+  const initialPrompt =
+    args.initialPrompt?.trim() || args.definition.starterPrompt
+
+  if (initialPrompt.length > MAX_INITIAL_PROMPT_LENGTH) {
+    throw new Error(
+      `The kickoff prompt is too long. Keep it under ${MAX_INITIAL_PROMPT_LENGTH.toLocaleString()} characters.`,
+    )
+  }
+
+  if (!repoUrl) {
+    if (!args.definition.repositoryOptional) {
+      throw new Error('A repository URL is required for this agent.')
+    }
+
+    return {
+      repoUrl: undefined,
+      branch: undefined,
+      repoName: args.definition.label,
+      repoProvider: undefined,
+      agentPresetId: args.definition.id,
+      agentLabel: args.definition.label,
+      agentProvider: modelOption.provider,
+      agentModel: modelOption.model,
+      initialPrompt,
+    }
+  }
+
+  let parsedUrl: URL
+
+  try {
+    parsedUrl = new URL(repoUrl)
+  } catch {
+    throw new Error('Use a valid HTTPS Git repository URL.')
+  }
+
+  if (!['https:', 'http:'].includes(parsedUrl.protocol)) {
+    throw new Error('Only HTTP(S) repository URLs are supported in this MVP.')
+  }
+
+  const repoName = parsedUrl.pathname
+    .split('/')
+    .filter(Boolean)
+    .pop()
+    ?.replace(/\.git$/, '')
+    .trim()
+
+  if (!repoName) {
+    throw new Error('Could not determine the repository name from that URL.')
+  }
+
+  return {
+    repoUrl: parsedUrl.toString(),
+    branch,
+    repoName,
+    repoProvider: isGitHubRepo(parsedUrl)
+      ? ('github' as const)
+      : ('git' as const),
+    agentPresetId: args.definition.id,
+    agentLabel: args.definition.label,
+    agentProvider: modelOption.provider,
+    agentModel: modelOption.model,
+    initialPrompt,
+  }
+}
+
 export function normalizeSandboxInput(input: CreateSandboxInput) {
+  const presetId = input.agentPresetId ?? 'general-engineer'
   const repoUrl = input.repoUrl?.trim() || undefined
   const branch = repoUrl ? input.branch?.trim() || undefined : undefined
-  const preset = getOpenCodeAgentPreset(input.agentPresetId)
+  const preset = getOpenCodeAgentPreset(presetId)
   const modelOption = resolveOpenCodeModelOption({
     provider: input.agentProvider,
     model: input.agentModel,
@@ -149,6 +235,20 @@ export function getSandboxBaseBranchDisplay(args: {
   }
 
   return args.repoBranch?.trim() || 'default'
+}
+
+export function getSandboxSourceLabel(
+  sourceKind?: AgentSourceKind | null,
+) {
+  switch (sourceKind) {
+    case 'marketplace_draft':
+      return 'Marketplace draft'
+    case 'marketplace_version':
+      return 'Marketplace agent'
+    case 'builtin':
+    default:
+      return 'Verified BuddyPie'
+  }
 }
 
 function sanitizeGitBranchSegment(value: string) {

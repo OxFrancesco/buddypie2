@@ -87,6 +87,7 @@ const launchCostByPreset: Record<string, number> = {
   'frontend-builder': 250,
   'docs-writer': 250,
   'nansen-analyst': 250,
+  'marketplace-default': 250,
 }
 
 const fixedEventCostsUsdCents: Record<
@@ -298,7 +299,17 @@ export function getBillingEventPriceUsdCents(
   eventType: BillingEventType,
 ) {
   if (eventType === 'sandbox_launch') {
-    return launchCostByPreset[agentPresetId] ?? launchCostByPreset['general-engineer']
+    if (
+      agentPresetId.startsWith('marketplace-') ||
+      agentPresetId.startsWith('marketplace-draft-')
+    ) {
+      return launchCostByPreset['marketplace-default']
+    }
+
+    return (
+      launchCostByPreset[agentPresetId] ??
+      launchCostByPreset['marketplace-default']
+    )
   }
 
   return fixedEventCostsUsdCents[eventType]

@@ -3,9 +3,11 @@ import { api } from 'convex/_generated/api'
 import type { Id } from 'convex/_generated/dataModel'
 import { Effect } from 'effect'
 import { getBillingEventPriceUsdCents } from '~/lib/billing/catalog'
+import { normalizeSandboxInputWithDefinition } from '~/lib/sandboxes'
+import { resolveMarketplaceLaunchSelection } from '~/lib/server/marketplace'
 import {
-  ValidationError,
   PaymentError,
+  ValidationError,
 } from '~/lib/server/effect/errors'
 import { runRouteProgram } from '~/lib/server/effect/runtime'
 import {
@@ -15,7 +17,6 @@ import {
 } from '~/routes/api/x402/-_helpers'
 import {
   getSandboxLaunchQuantitySummary,
-  normalizeSandboxInput,
   type CreateSandboxInput,
 } from '~/lib/sandboxes'
 
@@ -28,7 +29,9 @@ function normalizeUnknownMessage(error: unknown, fallback: string) {
 function recordDirectCharge<T>(options: {
   auth: Awaited<
     ReturnType<typeof import('~/lib/server/authenticated-convex').getAuthenticatedConvexClient>
-  >
+  > & {
+    normalized: ReturnType<typeof normalizeSandboxInputWithDefinition>
+  }
   result: T & {
     sandboxId: string
     agentPresetId: string
@@ -109,27 +112,58 @@ export const Route = createFileRoute('/api/x402/sandboxes/create')({
               )
             }
 
-            const normalized = yield* Effect.try({
-              try: () => normalizeSandboxInput(body),
-              catch: (error) =>
-                new ValidationError({
-                  message: normalizeUnknownMessage(
-                    error,
-                    'Sandbox input is invalid.',
-                  ),
-                  cause: error,
-                }),
-            })
-
             return yield* executeX402PaymentRoute({
               request,
-              context: getAuthenticatedRouteContextProgram(),
-              amountUsdCents: () =>
+              context: Effect.gen(function*() {
+                const auth = yield* getAuthenticatedRouteContextProgram()
+                const resolvedLaunch = yield* Effect.tryPromise({
+                  try: () =>
+                    resolveMarketplaceLaunchSelection({
+                      client: auth,
+                      selection: body.launchSelection ?? {
+                        kind: 'builtin',
+                        builtinPresetId:
+                          body.agentPresetId ?? 'general-engineer',
+                      },
+                    }),
+                  catch: (error) =>
+                    new ValidationError({
+                      message: normalizeUnknownMessage(
+                        error,
+                        'Marketplace launch selection is invalid.',
+                      ),
+                      cause: error,
+                    }),
+                })
+                const normalized = yield* Effect.try({
+                  try: () =>
+                    normalizeSandboxInputWithDefinition({
+                      repoUrl: body.repoUrl,
+                      branch: body.branch,
+                      initialPrompt: body.initialPrompt,
+                      definition: resolvedLaunch.definition,
+                    }),
+                  catch: (error) =>
+                    new ValidationError({
+                      message: normalizeUnknownMessage(
+                        error,
+                        'Sandbox input is invalid.',
+                      ),
+                      cause: error,
+                    }),
+                })
+
+                return {
+                  ...auth,
+                  normalized,
+                }
+              }),
+              amountUsdCents: ({ normalized }) =>
                 getBillingEventPriceUsdCents(
                   normalized.agentPresetId,
                   'sandbox_launch',
                 ),
-              resourceDescription: () =>
+              resourceDescription: ({ normalized }) =>
                 `Launch ${normalized.repoName} with ${normalized.agentLabel}.`,
               execute: () =>
                 createSandboxWithPayment(
@@ -144,14 +178,14 @@ export const Route = createFileRoute('/api/x402/sandboxes/create')({
                   auth,
                   result,
                   amountUsdCents: getBillingEventPriceUsdCents(
-                    normalized.agentPresetId,
+                    auth.normalized.agentPresetId,
                     'sandbox_launch',
                   ),
                   idempotencyKey: `x402:sandbox_launch:${settlement.transaction}`,
-                  description: `OpenCode sandbox launch for ${normalized.repoName}`,
+                  description: `OpenCode sandbox launch for ${auth.normalized.repoName}`,
                   quantitySummary: getSandboxLaunchQuantitySummary({
-                    repoUrl: normalized.repoUrl,
-                    branch: normalized.branch,
+                    repoUrl: auth.normalized.repoUrl,
+                    branch: auth.normalized.branch,
                   }),
                   settlement,
                 }),

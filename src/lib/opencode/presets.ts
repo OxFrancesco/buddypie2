@@ -1,4 +1,8 @@
 export type {
+  AgentSourceKind,
+  LaunchableAgentDefinition,
+  MarketplacePublicStatus,
+  MarketplaceReviewStatus,
   OpenCodeAgentPresetDefinition,
   OpenCodeDocsWorkspaceBootstrap,
   OpenCodeManagedMcp,

@@ -35,6 +35,7 @@ import {
   getSafeOpenCodeAgentPreset,
 } from '~/lib/opencode/presets'
 import {
+  getSandboxSourceLabel,
   isX402SandboxPaymentMethod,
   type SandboxPaymentMethod,
 } from '~/lib/sandboxes'
@@ -138,6 +139,7 @@ function SandboxDetailRoute() {
     sandboxUsage.wallet?.chainId ?? pricingCatalog.environment.chainId
   const preset = getSafeOpenCodeAgentPreset(sandbox?.agentPresetId)
   const presetLabel = sandbox?.agentLabel ?? preset.label
+  const sourceLabel = getSandboxSourceLabel(sandbox?.agentSourceKind)
   const modelOption = getOpenCodeModelOptionByProviderAndModel(
     sandbox?.agentProvider,
     sandbox?.agentModel,
@@ -301,6 +303,7 @@ function SandboxDetailRoute() {
         <SandboxSummaryCard
           sandbox={sandbox}
           presetLabel={presetLabel}
+          sourceLabel={sourceLabel}
           paymentMethod={paymentMethod}
           providerLabel={providerLabel}
           modelLabel={modelLabel}
@@ -345,6 +348,7 @@ function SandboxDetailRoute() {
       <SandboxSummaryCard
         sandbox={sandbox}
         presetLabel={presetLabel}
+        sourceLabel={sourceLabel}
         paymentMethod={paymentMethod}
         providerLabel={providerLabel}
         modelLabel={modelLabel}

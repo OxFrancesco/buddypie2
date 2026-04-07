@@ -69,7 +69,7 @@ export type RepositoryRuntimeContext = {
 }
 
 export type ResolvedOpenCodeLaunchConfig = {
-  preset: import('~/lib/opencode/presets').OpenCodeAgentPreset
+  preset: import('~/lib/opencode/presets').LaunchableAgentDefinition
   launchEnvironment: LaunchEnvironment
 }
 

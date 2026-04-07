@@ -12,10 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthedProfileRouteImport } from './routes/_authed/profile'
+import { Route as AuthedMarketplaceRouteImport } from './routes/_authed/marketplace'
 import { Route as AuthedDashboardRouteImport } from './routes/_authed/dashboard'
 import { Route as ApiBillingClerkWebhookRouteImport } from './routes/api/billing/clerk-webhook'
 import { Route as AuthedSandboxesSandboxIdRouteImport } from './routes/_authed/sandboxes/$sandboxId'
+import { Route as AuthedMarketplaceAgentSlugRouteImport } from './routes/_authed/marketplace/$agentSlug'
 import { Route as ApiX402SandboxesCreateRouteImport } from './routes/api/x402/sandboxes/create'
+import { Route as AuthedMarketplaceDraftsAgentIdRouteImport } from './routes/_authed/marketplace/drafts/$agentId'
 import { Route as ApiX402SandboxesSandboxIdWebTerminalRouteImport } from './routes/api/x402/sandboxes/$sandboxId/web-terminal'
 import { Route as ApiX402SandboxesSandboxIdSshRouteImport } from './routes/api/x402/sandboxes/$sandboxId/ssh'
 import { Route as ApiX402SandboxesSandboxIdRestartRouteImport } from './routes/api/x402/sandboxes/$sandboxId/restart'
@@ -35,6 +38,11 @@ const AuthedProfileRoute = AuthedProfileRouteImport.update({
   path: '/profile',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedMarketplaceRoute = AuthedMarketplaceRouteImport.update({
+  id: '/marketplace',
+  path: '/marketplace',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedDashboardRoute = AuthedDashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -51,11 +59,23 @@ const AuthedSandboxesSandboxIdRoute =
     path: '/sandboxes/$sandboxId',
     getParentRoute: () => AuthedRoute,
   } as any)
+const AuthedMarketplaceAgentSlugRoute =
+  AuthedMarketplaceAgentSlugRouteImport.update({
+    id: '/$agentSlug',
+    path: '/$agentSlug',
+    getParentRoute: () => AuthedMarketplaceRoute,
+  } as any)
 const ApiX402SandboxesCreateRoute = ApiX402SandboxesCreateRouteImport.update({
   id: '/api/x402/sandboxes/create',
   path: '/api/x402/sandboxes/create',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedMarketplaceDraftsAgentIdRoute =
+  AuthedMarketplaceDraftsAgentIdRouteImport.update({
+    id: '/drafts/$agentId',
+    path: '/drafts/$agentId',
+    getParentRoute: () => AuthedMarketplaceRoute,
+  } as any)
 const ApiX402SandboxesSandboxIdWebTerminalRoute =
   ApiX402SandboxesSandboxIdWebTerminalRouteImport.update({
     id: '/api/x402/sandboxes/$sandboxId/web-terminal',
@@ -84,9 +104,12 @@ const ApiX402SandboxesSandboxIdPreviewRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/dashboard': typeof AuthedDashboardRoute
+  '/marketplace': typeof AuthedMarketplaceRouteWithChildren
   '/profile': typeof AuthedProfileRoute
+  '/marketplace/$agentSlug': typeof AuthedMarketplaceAgentSlugRoute
   '/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
   '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/marketplace/drafts/$agentId': typeof AuthedMarketplaceDraftsAgentIdRoute
   '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
   '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
   '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
@@ -96,9 +119,12 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/dashboard': typeof AuthedDashboardRoute
+  '/marketplace': typeof AuthedMarketplaceRouteWithChildren
   '/profile': typeof AuthedProfileRoute
+  '/marketplace/$agentSlug': typeof AuthedMarketplaceAgentSlugRoute
   '/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
   '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/marketplace/drafts/$agentId': typeof AuthedMarketplaceDraftsAgentIdRoute
   '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
   '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
   '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
@@ -110,9 +136,12 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_authed': typeof AuthedRouteWithChildren
   '/_authed/dashboard': typeof AuthedDashboardRoute
+  '/_authed/marketplace': typeof AuthedMarketplaceRouteWithChildren
   '/_authed/profile': typeof AuthedProfileRoute
+  '/_authed/marketplace/$agentSlug': typeof AuthedMarketplaceAgentSlugRoute
   '/_authed/sandboxes/$sandboxId': typeof AuthedSandboxesSandboxIdRoute
   '/api/billing/clerk-webhook': typeof ApiBillingClerkWebhookRoute
+  '/_authed/marketplace/drafts/$agentId': typeof AuthedMarketplaceDraftsAgentIdRoute
   '/api/x402/sandboxes/create': typeof ApiX402SandboxesCreateRoute
   '/api/x402/sandboxes/$sandboxId/preview': typeof ApiX402SandboxesSandboxIdPreviewRoute
   '/api/x402/sandboxes/$sandboxId/restart': typeof ApiX402SandboxesSandboxIdRestartRoute
@@ -124,9 +153,12 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/dashboard'
+    | '/marketplace'
     | '/profile'
+    | '/marketplace/$agentSlug'
     | '/sandboxes/$sandboxId'
     | '/api/billing/clerk-webhook'
+    | '/marketplace/drafts/$agentId'
     | '/api/x402/sandboxes/create'
     | '/api/x402/sandboxes/$sandboxId/preview'
     | '/api/x402/sandboxes/$sandboxId/restart'
@@ -136,9 +168,12 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/dashboard'
+    | '/marketplace'
     | '/profile'
+    | '/marketplace/$agentSlug'
     | '/sandboxes/$sandboxId'
     | '/api/billing/clerk-webhook'
+    | '/marketplace/drafts/$agentId'
     | '/api/x402/sandboxes/create'
     | '/api/x402/sandboxes/$sandboxId/preview'
     | '/api/x402/sandboxes/$sandboxId/restart'
@@ -149,9 +184,12 @@ export interface FileRouteTypes {
     | '/'
     | '/_authed'
     | '/_authed/dashboard'
+    | '/_authed/marketplace'
     | '/_authed/profile'
+    | '/_authed/marketplace/$agentSlug'
     | '/_authed/sandboxes/$sandboxId'
     | '/api/billing/clerk-webhook'
+    | '/_authed/marketplace/drafts/$agentId'
     | '/api/x402/sandboxes/create'
     | '/api/x402/sandboxes/$sandboxId/preview'
     | '/api/x402/sandboxes/$sandboxId/restart'
@@ -193,6 +231,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedProfileRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/marketplace': {
+      id: '/_authed/marketplace'
+      path: '/marketplace'
+      fullPath: '/marketplace'
+      preLoaderRoute: typeof AuthedMarketplaceRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/dashboard': {
       id: '/_authed/dashboard'
       path: '/dashboard'
@@ -214,12 +259,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSandboxesSandboxIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/marketplace/$agentSlug': {
+      id: '/_authed/marketplace/$agentSlug'
+      path: '/$agentSlug'
+      fullPath: '/marketplace/$agentSlug'
+      preLoaderRoute: typeof AuthedMarketplaceAgentSlugRouteImport
+      parentRoute: typeof AuthedMarketplaceRoute
+    }
     '/api/x402/sandboxes/create': {
       id: '/api/x402/sandboxes/create'
       path: '/api/x402/sandboxes/create'
       fullPath: '/api/x402/sandboxes/create'
       preLoaderRoute: typeof ApiX402SandboxesCreateRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_authed/marketplace/drafts/$agentId': {
+      id: '/_authed/marketplace/drafts/$agentId'
+      path: '/drafts/$agentId'
+      fullPath: '/marketplace/drafts/$agentId'
+      preLoaderRoute: typeof AuthedMarketplaceDraftsAgentIdRouteImport
+      parentRoute: typeof AuthedMarketplaceRoute
     }
     '/api/x402/sandboxes/$sandboxId/web-terminal': {
       id: '/api/x402/sandboxes/$sandboxId/web-terminal'
@@ -252,14 +311,29 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AuthedMarketplaceRouteChildren {
+  AuthedMarketplaceAgentSlugRoute: typeof AuthedMarketplaceAgentSlugRoute
+  AuthedMarketplaceDraftsAgentIdRoute: typeof AuthedMarketplaceDraftsAgentIdRoute
+}
+
+const AuthedMarketplaceRouteChildren: AuthedMarketplaceRouteChildren = {
+  AuthedMarketplaceAgentSlugRoute: AuthedMarketplaceAgentSlugRoute,
+  AuthedMarketplaceDraftsAgentIdRoute: AuthedMarketplaceDraftsAgentIdRoute,
+}
+
+const AuthedMarketplaceRouteWithChildren =
+  AuthedMarketplaceRoute._addFileChildren(AuthedMarketplaceRouteChildren)
+
 interface AuthedRouteChildren {
   AuthedDashboardRoute: typeof AuthedDashboardRoute
+  AuthedMarketplaceRoute: typeof AuthedMarketplaceRouteWithChildren
   AuthedProfileRoute: typeof AuthedProfileRoute
   AuthedSandboxesSandboxIdRoute: typeof AuthedSandboxesSandboxIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedDashboardRoute: AuthedDashboardRoute,
+  AuthedMarketplaceRoute: AuthedMarketplaceRouteWithChildren,
   AuthedProfileRoute: AuthedProfileRoute,
   AuthedSandboxesSandboxIdRoute: AuthedSandboxesSandboxIdRoute,
 }

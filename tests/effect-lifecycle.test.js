@@ -4,7 +4,9 @@ import { createSandboxWithPayment } from '../src/features/sandboxes/runtime/life
 import {
   ConvexService,
   DaytonaService,
+  MarketplaceService,
 } from '../src/lib/server/effect/services.ts'
+import { getOpenCodeAgentPreset } from '../src/lib/opencode/presets.ts'
 
 function createConvexLayer(mutation) {
   return Layer.succeed(ConvexService, {
@@ -50,6 +52,16 @@ function createDaytonaLayer(overrides = {}) {
   })
 }
 
+const marketplaceLayer = Layer.succeed(MarketplaceService, {
+  resolveLaunchSelection: () =>
+    Effect.succeed({
+      sourceKind: 'builtin',
+      definition: getOpenCodeAgentPreset('general-engineer'),
+    }),
+  buildApprovedSnapshot: () => Effect.die('unused'),
+  requireReviewer: Effect.die('unused'),
+})
+
 describe('createSandboxWithPayment', () => {
   test('deletes the Daytona sandbox and marks the record failed when persistence breaks after launch', async () => {
     const deletedSandboxes = []
@@ -74,6 +86,7 @@ describe('createSandboxWithPayment', () => {
             deletedSandboxes.push(sandboxId)
           }),
       }),
+      marketplaceLayer,
     )
 
     const program = createSandboxWithPayment(

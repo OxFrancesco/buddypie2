@@ -16,6 +16,7 @@ import {
 import {
   getSandboxBaseBranchDisplay,
   getSandboxRepositoryDisplay,
+  getSandboxSourceLabel,
   type SandboxRepoProvider,
 } from '~/lib/sandboxes'
 
@@ -27,6 +28,7 @@ type SandboxCardProps = {
     repoBranch?: string
     repoProvider?: SandboxRepoProvider
     agentPresetId?: string
+    agentSourceKind?: 'builtin' | 'marketplace_draft' | 'marketplace_version'
     agentLabel?: string
     agentProvider?: string
     agentModel?: string
@@ -49,7 +51,8 @@ export function SandboxCard({
   onRestart,
 }: SandboxCardProps) {
   const preset = getSafeOpenCodeAgentPreset(sandbox.agentPresetId)
-  const presetLabel = sandbox.agentLabel ?? preset.label
+  const agentLabel = sandbox.agentLabel ?? preset.label
+  const sourceLabel = getSandboxSourceLabel(sandbox.agentSourceKind)
   const modelOption = getOpenCodeModelOptionByProviderAndModel(
     sandbox.agentProvider,
     sandbox.agentModel,
@@ -69,7 +72,13 @@ export function SandboxCard({
               variant="outline"
               className="border-2 border-foreground font-bold uppercase tracking-widest"
             >
-              {presetLabel}
+              {agentLabel}
+            </Badge>
+            <Badge
+              variant="outline"
+              className="border-2 border-foreground font-bold uppercase tracking-widest"
+            >
+              {sourceLabel}
             </Badge>
           </div>
           <div className="flex gap-2">

@@ -6,7 +6,6 @@ import {
 import {
   buildInitialPromptContent,
   buildOpenCodeSessionPreviewUrl,
-  getPresetById,
   resolveOpenCodeLaunchConfig,
 } from './launch-config'
 import {
@@ -28,17 +27,13 @@ import {
 export async function createOpenCodeSandbox(args: {
   repoUrl?: string
   branch?: string
-  agentPresetId: string
-  agentProvider?: string
-  agentModel?: string
+  agentDefinition: import('~/lib/opencode/presets').LaunchableAgentDefinition
   initialPrompt?: string
   githubAuth?: import('./shared').GitHubLaunchAuth | null
 }) {
   const daytona = createDaytonaClient()
   const { preset, launchEnvironment } = resolveOpenCodeLaunchConfig({
-    agentPresetId: args.agentPresetId,
-    agentProvider: args.agentProvider,
-    agentModel: args.agentModel,
+    definition: args.agentDefinition,
     githubAuth: args.githubAuth,
   })
   let sandbox: import('@daytonaio/sdk').Sandbox | undefined
@@ -165,12 +160,11 @@ export async function sendPromptToSandboxOpencodeSession(args: {
   prompt: string
 }) {
   const sandbox = await createDaytonaClient().get(args.daytonaSandboxId)
-  const preset = getPresetById(args.agentPresetId)
 
   await sendPromptToExistingSession({
     sandbox,
     workspacePath: args.workspacePath,
-    preset,
+    agentId: args.agentPresetId,
     sessionId: args.opencodeSessionId,
     prompt: args.prompt,
   })

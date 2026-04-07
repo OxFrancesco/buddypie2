@@ -5,6 +5,7 @@ import type { CreateSandboxInput } from '~/lib/sandboxes'
 import {
   ConvexService,
   DaytonaService,
+  MarketplaceService,
 } from '~/lib/server/effect/services'
 import {
   ExternalServiceError,
@@ -16,11 +17,7 @@ import {
   getBillingEventPriceUsdCents,
   type BillingPaymentMethod,
 } from '../../../../convex/lib/billingConfig'
-import {
-  getSafeOpenCodeAgentPreset,
-  resolveOpenCodeModelOption,
-} from '~/lib/opencode/presets'
-import { normalizeSandboxInput } from '~/lib/sandboxes'
+import { normalizeSandboxInputWithDefinition } from '~/lib/sandboxes'
 import { getGithubLaunchAuth } from './github'
 import {
   captureDelegatedLaunchCharge,
@@ -71,36 +68,25 @@ function githubAuthEffect(userId: string) {
   })
 }
 
-function resolveSandboxPreset(input: {
-  agentPresetId?: string
-  agentLabel?: string
-  agentProvider?: string
-  agentModel?: string
-  initialPrompt?: string
+function normalizeLaunchInput(args: {
+  repoUrl?: string | null
+  branch?: string | null
+  initialPrompt?: string | null
+  definition: Parameters<typeof normalizeSandboxInputWithDefinition>[0]['definition']
 }) {
   return Effect.try({
-    try: () => {
-      const preset = getSafeOpenCodeAgentPreset(input.agentPresetId)
-      const modelOption = resolveOpenCodeModelOption({
-        provider: input.agentProvider,
-        model: input.agentModel,
-        fallbackProvider: preset.provider,
-        fallbackModel: preset.model,
-      })
-
-      return {
-        agentPresetId: preset.id,
-        agentLabel: input.agentLabel ?? preset.label,
-        agentProvider: modelOption.provider,
-        agentModel: modelOption.model,
-        initialPrompt: input.initialPrompt?.trim() || preset.starterPrompt,
-      }
-    },
+    try: () =>
+      normalizeSandboxInputWithDefinition({
+        repoUrl: args.repoUrl ?? undefined,
+        branch: args.branch ?? undefined,
+        initialPrompt: args.initialPrompt ?? undefined,
+        definition: args.definition,
+      }),
     catch: (error) =>
       new ValidationError({
         message: normalizeUnknownMessage(
           error,
-          'The sandbox preset configuration is invalid.',
+          'The sandbox launch configuration is invalid.',
         ),
         cause: error,
       }),
@@ -108,13 +94,14 @@ function resolveSandboxPreset(input: {
 }
 
 function launchSandboxLifecycle(args: {
-  normalized: ReturnType<typeof normalizeSandboxInput>
+  input: CreateSandboxInput
   paymentMethod: BillingPaymentMethod
 }) {
   return Effect.scoped(
     Effect.gen(function*() {
       const convex = yield* ConvexService
       const daytona = yield* DaytonaService
+      const marketplace = yield* MarketplaceService
       yield* convex.ensureCurrentUser
 
       const pendingSandboxRef = yield* Ref.make<Doc<'sandboxes'> | null>(null)
@@ -150,46 +137,64 @@ function launchSandboxLifecycle(args: {
         }),
       )
 
+      const resolvedLaunch = yield* marketplace.resolveLaunchSelection(
+        args.input.launchSelection ?? {
+          kind: 'builtin',
+          builtinPresetId: args.input.agentPresetId ?? 'general-engineer',
+        },
+      )
+      const normalized = yield* normalizeLaunchInput({
+        repoUrl: args.input.repoUrl,
+        branch: args.input.branch,
+        initialPrompt: args.input.initialPrompt,
+        definition: resolvedLaunch.definition,
+      })
+
       if (args.paymentMethod === 'delegated_budget') {
         yield* requireDelegatedBudgetAllowance({
           requiredAmountUsdCents: getBillingEventPriceUsdCents(
-            args.normalized.agentPresetId,
+            normalized.agentPresetId,
             'sandbox_launch',
           ),
-          actionLabel: `launching ${args.normalized.repoName}`,
+          actionLabel: `launching ${normalized.repoName}`,
         })
       }
 
       const githubAuth =
-        args.normalized.repoProvider === 'github'
+        normalized.repoProvider === 'github'
           ? yield* githubAuthEffect(convex.context.userId)
           : null
 
       yield* daytona.resolveOpenCodeLaunchConfig({
-        agentPresetId: args.normalized.agentPresetId,
-        agentProvider: args.normalized.agentProvider,
-        agentModel: args.normalized.agentModel,
+        definition: resolvedLaunch.definition,
         githubAuth,
       })
 
       const pendingSandbox = yield* sandboxMutation({
         try: () =>
           convex.context.convex.mutation(api.sandboxes.createPending, {
-            repoName: args.normalized.repoName,
-            agentPresetId: args.normalized.agentPresetId,
-            agentLabel: args.normalized.agentLabel,
-            agentProvider: args.normalized.agentProvider,
-            agentModel: args.normalized.agentModel,
-            initialPrompt: args.normalized.initialPrompt,
+            repoName: normalized.repoName,
+            agentSourceKind: resolvedLaunch.sourceKind,
+            ...(resolvedLaunch.marketplaceAgentId
+              ? { marketplaceAgentId: resolvedLaunch.marketplaceAgentId }
+              : {}),
+            ...(resolvedLaunch.marketplaceVersionId
+              ? { marketplaceVersionId: resolvedLaunch.marketplaceVersionId }
+              : {}),
+            agentPresetId: normalized.agentPresetId,
+            agentLabel: normalized.agentLabel,
+            agentProvider: normalized.agentProvider,
+            agentModel: normalized.agentModel,
+            initialPrompt: normalized.initialPrompt,
             paymentMethod: args.paymentMethod,
-            ...(args.normalized.repoUrl
-              ? { repoUrl: args.normalized.repoUrl }
+            ...(normalized.repoUrl
+              ? { repoUrl: normalized.repoUrl }
               : {}),
-            ...(args.normalized.branch
-              ? { repoBranch: args.normalized.branch }
+            ...(normalized.branch
+              ? { repoBranch: normalized.branch }
               : {}),
-            ...(args.normalized.repoProvider
-              ? { repoProvider: args.normalized.repoProvider }
+            ...(normalized.repoProvider
+              ? { repoProvider: normalized.repoProvider }
               : {}),
           }),
         fallback: 'BuddyPie could not create the pending sandbox record.',
@@ -197,12 +202,10 @@ function launchSandboxLifecycle(args: {
       yield* Ref.set(pendingSandboxRef, pendingSandbox)
 
       const launched = yield* daytona.createOpenCodeSandbox({
-        repoUrl: args.normalized.repoUrl,
-        branch: args.normalized.branch,
-        agentPresetId: args.normalized.agentPresetId,
-        agentProvider: args.normalized.agentProvider,
-        agentModel: args.normalized.agentModel,
-        initialPrompt: args.normalized.initialPrompt,
+        repoUrl: normalized.repoUrl,
+        branch: normalized.branch,
+        agentDefinition: resolvedLaunch.definition,
+        initialPrompt: normalized.initialPrompt,
         githubAuth,
       })
       yield* Ref.set(launchedSandboxRef, launched)
@@ -210,9 +213,9 @@ function launchSandboxLifecycle(args: {
       if (args.paymentMethod === 'delegated_budget') {
         yield* captureDelegatedLaunchCharge({
           sandboxId: pendingSandbox._id,
-          agentPresetId: args.normalized.agentPresetId,
-          repoName: args.normalized.repoName,
-          repoBranch: args.normalized.branch,
+          agentPresetId: normalized.agentPresetId,
+          repoName: normalized.repoName,
+          repoBranch: normalized.branch,
         })
       }
 
@@ -235,8 +238,7 @@ function launchSandboxLifecycle(args: {
       return {
         sandboxId: readySandbox._id,
         previewUrl: readySandbox.previewUrl ?? launched.previewUrl,
-        agentPresetId:
-          readySandbox.agentPresetId ?? args.normalized.agentPresetId,
+        agentPresetId: readySandbox.agentPresetId ?? normalized.agentPresetId,
       }
     }),
   )
@@ -250,8 +252,39 @@ function restartSandboxLifecycle(args: {
     Effect.gen(function*() {
       const convex = yield* ConvexService
       const daytona = yield* DaytonaService
+      const marketplace = yield* MarketplaceService
       const sandbox = yield* convex.getOwnedSandbox(args.sandboxId)
-      const restartPreset = yield* resolveSandboxPreset(sandbox)
+      const resolvedLaunch = yield* marketplace.resolveLaunchSelection(
+        sandbox.agentSourceKind === 'marketplace_draft' &&
+          sandbox.marketplaceAgentId
+          ? {
+              kind: 'marketplace_draft',
+              marketplaceAgentId: String(sandbox.marketplaceAgentId),
+            }
+          : sandbox.agentSourceKind === 'marketplace_version' &&
+              sandbox.marketplaceAgentId
+            ? {
+                kind: 'marketplace_version',
+                marketplaceAgentId: String(sandbox.marketplaceAgentId),
+                ...(sandbox.marketplaceVersionId
+                  ? {
+                      marketplaceVersionId: String(
+                        sandbox.marketplaceVersionId,
+                      ),
+                    }
+                  : {}),
+              }
+            : {
+                kind: 'builtin',
+                builtinPresetId: sandbox.agentPresetId ?? 'general-engineer',
+              },
+      )
+      const restartPreset = yield* normalizeLaunchInput({
+        repoUrl: sandbox.repoUrl,
+        branch: sandbox.repoBranch,
+        initialPrompt: sandbox.initialPrompt,
+        definition: resolvedLaunch.definition,
+      })
 
       const pendingSandboxRef = yield* Ref.make<Doc<'sandboxes'> | null>(null)
       const launchedSandboxRef = yield* Ref.make<LaunchedSandbox | null>(null)
@@ -302,9 +335,7 @@ function restartSandboxLifecycle(args: {
           : null
 
       yield* daytona.resolveOpenCodeLaunchConfig({
-        agentPresetId: restartPreset.agentPresetId,
-        agentProvider: restartPreset.agentProvider,
-        agentModel: restartPreset.agentModel,
+        definition: resolvedLaunch.definition,
         githubAuth,
       })
 
@@ -312,6 +343,13 @@ function restartSandboxLifecycle(args: {
         try: () =>
           convex.context.convex.mutation(api.sandboxes.createPending, {
             repoName: sandbox.repoName,
+            agentSourceKind: resolvedLaunch.sourceKind,
+            ...(resolvedLaunch.marketplaceAgentId
+              ? { marketplaceAgentId: resolvedLaunch.marketplaceAgentId }
+              : {}),
+            ...(resolvedLaunch.marketplaceVersionId
+              ? { marketplaceVersionId: resolvedLaunch.marketplaceVersionId }
+              : {}),
             agentPresetId: restartPreset.agentPresetId,
             agentLabel: restartPreset.agentLabel,
             agentProvider: restartPreset.agentProvider,
@@ -331,9 +369,7 @@ function restartSandboxLifecycle(args: {
       const launched = yield* daytona.createOpenCodeSandbox({
         repoUrl: sandbox.repoUrl,
         branch: sandbox.repoBranch,
-        agentPresetId: restartPreset.agentPresetId,
-        agentProvider: restartPreset.agentProvider,
-        agentModel: restartPreset.agentModel,
+        agentDefinition: resolvedLaunch.definition,
         initialPrompt: restartPreset.initialPrompt,
         githubAuth,
       })
@@ -391,21 +427,10 @@ export function createSandboxWithPayment(
   input: CreateSandboxInput,
   paymentMethod: BillingPaymentMethod,
 ) {
-  return Effect.try({
-    try: () => normalizeSandboxInput(input),
-    catch: (error) =>
-      new ValidationError({
-        message: normalizeUnknownMessage(error, 'Sandbox input is invalid.'),
-        cause: error,
-      }),
-  }).pipe(
-    Effect.flatMap((normalized) =>
-      launchSandboxLifecycle({
-        normalized,
-        paymentMethod,
-      }),
-    ),
-  )
+  return launchSandboxLifecycle({
+    input,
+    paymentMethod,
+  })
 }
 
 export function deleteSandboxRuntime(sandboxId: string) {

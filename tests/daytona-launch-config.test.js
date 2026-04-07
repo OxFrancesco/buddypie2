@@ -25,9 +25,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
 
     expect(() =>
       resolveOpenCodeLaunchConfig({
-        agentPresetId: 'docs-writer',
-        agentProvider: 'venice',
-        agentModel: 'minimax-m27',
+        definition: getOpenCodeAgentPreset('docs-writer'),
       }),
     ).toThrow(
       'VENICE_API_KEY or VENICE_INFERENCE_KEY is not configured on the server.',
@@ -39,9 +37,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
 
     expect(
       resolveOpenCodeLaunchConfig({
-        agentPresetId: 'docs-writer',
-        agentProvider: 'venice',
-        agentModel: 'minimax-m27',
+        definition: getOpenCodeAgentPreset('docs-writer'),
       }),
     ).toMatchObject({
       preset: {
@@ -61,9 +57,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
 
     expect(
       resolveOpenCodeLaunchConfig({
-        agentPresetId: 'docs-writer',
-        agentProvider: 'venice',
-        agentModel: 'minimax-m27',
+        definition: getOpenCodeAgentPreset('docs-writer'),
       }),
     ).toMatchObject({
       launchEnvironment: {
@@ -76,9 +70,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
     process.env.OPENROUTER_API_KEY = 'test-openrouter-key'
 
     const { launchEnvironment } = resolveOpenCodeLaunchConfig({
-      agentPresetId: 'general-engineer',
-      agentProvider: 'openrouter',
-      agentModel: 'minimax/minimax-m2.7',
+      definition: getOpenCodeAgentPreset('general-engineer'),
       githubAuth: {
         token: 'ghu_test_token',
         scopes: ['repo', 'read:user'],
@@ -107,9 +99,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
 
     expect(() =>
       resolveOpenCodeLaunchConfig({
-        agentPresetId: 'nansen-analyst',
-        agentProvider: 'venice',
-        agentModel: 'minimax-m27',
+        definition: getOpenCodeAgentPreset('nansen-analyst'),
       }),
     ).toThrow('NANSEN_API_KEY is not configured on the server.')
   })
@@ -120,9 +110,7 @@ describe('resolveOpenCodeLaunchConfig', () => {
 
     expect(
       resolveOpenCodeLaunchConfig({
-        agentPresetId: 'nansen-analyst',
-        agentProvider: 'venice',
-        agentModel: 'minimax-m27',
+        definition: getOpenCodeAgentPreset('nansen-analyst'),
       }),
     ).toMatchObject({
       preset: {

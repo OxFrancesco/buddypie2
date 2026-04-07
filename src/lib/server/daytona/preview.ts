@@ -1,7 +1,7 @@
 import { posix as pathPosix } from 'node:path'
 import type { Sandbox } from '@daytonaio/sdk'
-import type { OpenCodeAgentPreset } from '~/lib/opencode/presets'
 import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
+import type { LaunchableAgentDefinition } from '~/lib/opencode/presets'
 import { resolveDocsAppPath } from '~/lib/opencode/workspace-bootstrap'
 import {
   APP_PREVIEW_BOOT_POLL_INTERVAL_MS,
@@ -59,7 +59,7 @@ socket.once('error', fail)
 }
 
 export function resolveLaunchPreviewAppPath(args: {
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
   workspacePath: string
   runtimeContext?: import('~/lib/opencode/workspace-bootstrap').WorkspaceBootstrapRuntimeContext
 }) {

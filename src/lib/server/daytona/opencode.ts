@@ -1,5 +1,5 @@
 import type { Sandbox } from '@daytonaio/sdk'
-import type { OpenCodeAgentPreset } from '~/lib/opencode/presets'
+import type { LaunchableAgentDefinition } from '~/lib/opencode/presets'
 import { buildOpenCodeConfig } from './launch-config'
 import {
   getCommandStdout,
@@ -17,7 +17,7 @@ import {
 export async function startOpencodeWeb(args: {
   sandbox: Sandbox
   workspacePath: string
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
   launchEnvironment: LaunchEnvironment
 }): Promise<{ previewUrl: string; previewUrlPattern: string }> {
   const previewLink = await args.sandbox.getPreviewLink(OPENCODE_PORT)
@@ -102,7 +102,7 @@ export async function seedInitialPrompt(args: {
   sandbox: Sandbox
   workspacePath: string
   repoName: string
-  preset: OpenCodeAgentPreset
+  preset: LaunchableAgentDefinition
   initialPrompt: string
 }) {
   const seedScript = `
@@ -229,7 +229,7 @@ export async function seedInitialPrompt(args: {
 export async function sendPromptToExistingSession(args: {
   sandbox: Sandbox
   workspacePath: string
-  preset: OpenCodeAgentPreset
+  agentId: string
   sessionId: string
   prompt: string
 }) {
@@ -287,7 +287,7 @@ export async function sendPromptToExistingSession(args: {
     `node -e ${quoteShellArg(promptScript)}`,
     args.workspacePath,
     {
-      BUDDYPIE_AGENT_ID: args.preset.id,
+      BUDDYPIE_AGENT_ID: args.agentId,
       BUDDYPIE_SESSION_ID: args.sessionId,
       BUDDYPIE_PROMPT: args.prompt,
     },

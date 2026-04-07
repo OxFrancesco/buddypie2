@@ -926,6 +926,10 @@ export const pricingCatalog = query({
           'nansen-analyst',
           'sandbox_launch',
         ),
+        'marketplace-default': getBillingEventPriceUsdCents(
+          'marketplace-default',
+          'sandbox_launch',
+        ),
       },
       runtimePricesUsdCents: {
         preview_boot: getUsageEventCostUsdCents(

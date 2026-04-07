@@ -1,12 +1,8 @@
 import type {
-  OpenCodeAgentPreset,
+  LaunchableAgentDefinition,
   OpenCodeAgentPresetId,
 } from '~/lib/opencode/presets'
-import {
-  getOpenCodeAgentPreset,
-  resolveOpenCodeModelOption,
-  withOpenCodeModelOption,
-} from '~/lib/opencode/presets'
+import { getOpenCodeAgentPreset } from '~/lib/opencode/presets'
 import {
   buildWorkspaceBootstrapInstructions,
   buildWorkspaceBootstrapPromptPrefix,
@@ -38,7 +34,7 @@ export function buildOpenCodeSessionPreviewUrl(
 }
 
 function buildManagedInstructionsContent(
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
   repositoryContext?: RepositoryRuntimeContext,
 ) {
@@ -53,7 +49,7 @@ function buildManagedInstructionsContent(
 }
 
 export function buildManagedWorkspaceInstructionsContent(
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
   runtimeContext?: WorkspaceBootstrapRuntimeContext,
   repositoryContext?: RepositoryRuntimeContext,
 ) {
@@ -129,7 +125,7 @@ function buildRepositoryRuntimePromptPrefix(
 }
 
 export function buildOpenCodeConfig(
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
   previewUrlPattern: string,
 ) {
   const usesCustomOpenRouterModel =
@@ -183,7 +179,7 @@ export function buildOpenCodeConfig(
 }
 
 function buildLaunchEnvironment(
-  preset: OpenCodeAgentPreset,
+  preset: LaunchableAgentDefinition,
   githubAuth?: GitHubLaunchAuth | null,
 ): LaunchEnvironment {
   const environment: LaunchEnvironment = {}
@@ -230,19 +226,10 @@ function buildLaunchEnvironment(
 }
 
 export function resolveOpenCodeLaunchConfig(args: {
-  agentPresetId: string
-  agentProvider?: string
-  agentModel?: string
+  definition: LaunchableAgentDefinition
   githubAuth?: GitHubLaunchAuth | null
 }): ResolvedOpenCodeLaunchConfig {
-  const presetDefaults = getOpenCodeAgentPreset(args.agentPresetId)
-  const modelOption = resolveOpenCodeModelOption({
-    provider: args.agentProvider,
-    model: args.agentModel,
-    fallbackProvider: presetDefaults.provider,
-    fallbackModel: presetDefaults.model,
-  })
-  const preset = withOpenCodeModelOption(presetDefaults, modelOption)
+  const preset = args.definition
 
   return {
     preset,
